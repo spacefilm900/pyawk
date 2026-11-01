@@ -817,7 +817,11 @@ class Interpreter:
         """Recompute $0 from the fields, joined with the current OFS."""
         assert self.fields is not None
         ofs = self.str_of(self.vars["OFS"])
-        self.record = ofs.join(self.str_of(f) for f in self.fields)
+        # Most fields are already strings (or strnums, whose .s is their
+        # text); only numbers need converting with CONVFMT.  A list built
+        # with [...] joins faster than a generator.
+        str_of = self.str_of
+        self.record = ofs.join([f if type(f) is str else str_of(f) for f in self.fields])
         # A rebuilt $0 is a plain string, never a strnum (onetrue-awk and
         # gawk; mawk agrees except after an NF assignment).
         self.record_value = self.record
