@@ -928,7 +928,7 @@ class Compiler:
     def _e_Binary(self, node: ast.Binary) -> Thunk:
         left = self.expr(node.left)
         op = node.op
-        if type(node.right) is ast.Num and op in "+-*":
+        if type(node.right) is ast.Num and (op in "+-*" or (op in "/%" and node.right.value != 0.0)):  # type: ignore[attr-defined]
             c = node.right.value  # type: ignore[attr-defined]
             # Specialised closures for ``x + 1`` and friends.  Converting
             # a value to a number is inlined: floats (the usual case) skip
@@ -943,6 +943,19 @@ class Compiler:
                     a = left()
                     return (a if type(a) is float else to_num(a)) - c  # type: ignore[operator]
                 return sub_const
+
+            if op == "/":  # c is not 0, so no check is needed
+                def div_const() -> Value:
+                    a = left()
+                    return (a if type(a) is float else to_num(a)) / c  # type: ignore[operator]
+                return div_const
+            if op == "%":
+                fmod = math.fmod  # a local name is found faster than math.fmod
+
+                def mod_const() -> Value:
+                    a = left()
+                    return fmod(a if type(a) is float else to_num(a), c)  # type: ignore[arg-type]
+                return mod_const
 
             def mul_const() -> Value:
                 a = left()
@@ -968,7 +981,13 @@ class Compiler:
                 return (a if type(a) is float else to_num(a)) * (b if type(b) is float else to_num(b))  # type: ignore[operator]
             return mul
         fn = ARITH[op]
-        return lambda: fn(to_num(left()), to_num(right()))
+
+        def arith() -> Value:
+            a = left()
+            b = right()
+            return fn(a if type(a) is float else to_num(a), b if type(b) is float else to_num(b))  # type: ignore[arg-type]
+
+        return arith
 
     def _e_Unary(self, node: ast.Unary) -> Thunk:
         if node.op == "!":
@@ -1229,13 +1248,15 @@ class Compiler:
             return get_local
         if name == "NF":
             return it.get_nf
-        vars_get, new_global = self.vars.get, it.new_global_scalar
+        vars_, new_global = self.vars, it.new_global_scalar
 
         def get_global() -> Value:
-            v = vars_get(name)
-            if v is None:
-                v = new_global(name)
-            return v
+            # ``try`` costs nothing when no exception happens, and
+            # ``vars_[name]`` is quicker than a ``vars_.get(name)`` call.
+            try:
+                return vars_[name]
+            except KeyError:
+                return new_global(name)
 
         return get_global
 
