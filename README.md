@@ -20,9 +20,10 @@ assignments processed when reached, as in POSIX. Exit status is the value of
 
 | Area | Supported |
 |---|---|
-| Program | `BEGIN`, `pattern { action }`, `pattern`, `{ action }`, `END` (multiple of each) |
+| Program | `BEGIN`, `pattern { action }`, `pattern`, `{ action }`, `END` (multiple of each), `function` definitions |
+| Functions | `function name(params) { ... }` anywhere in the program (calls may precede the definition), `name(args)` calls (no space before `(`), `return [expr]`, extra parameters as local variables, scalars by value, arrays by reference (an unused variable passed in becomes an array if the function uses it as one), recursion (depth > 10000) |
 | Patterns | any expression, `/ere/`, `!`, `&&`, `\|\|`, `~`, `!~` |
-| Statements | `if/else`, `while`, `do-while`, `for(;;)`, `for (k in a)`, `break`, `continue`, `next`, `exit [n]`, `print`, `printf`, `delete a[k]`, `delete a`, `{ }` blocks |
+| Statements | `if/else`, `while`, `do-while`, `for(;;)`, `for (k in a)`, `break`, `continue`, `next`, `exit [n]`, `return [expr]`, `print`, `printf`, `delete a[k]`, `delete a`, `{ }` blocks |
 | Fields | `$0`, `$n`, `$expr`, field assignment rebuilds `$0` with `OFS`, `NF` assignment truncates/extends |
 | Variables | `NR FNR NF FS OFS RS ORS FILENAME ARGC ARGV CONVFMT OFMT RSTART RLENGTH SUBSEP` (+ `ENVIRON`) |
 | FS | `" "` (default whitespace), single character, a regex when longer, `""` splits characters |
@@ -33,8 +34,13 @@ assignments processed when reached, as in POSIX. Exit status is the value of
 | Output | `print`/`printf` with `> file`, `>> file`, `\| cmd`; `close()` |
 | Values | dual string/number values with POSIX *strnum* semantics for fields, `getline` input, `split()` elements, `ARGV`, `-v` and operand assignments |
 
-Deferred (they fail with a clear "not supported yet" error): user-defined
-functions / `return`, range patterns `p1, p2`, `nextfile`.
+Deferred (they fail with a clear "not supported yet" error): range patterns
+`p1, p2`, `nextfile`.
+
+Not accepted, on purpose: `func` as a synonym for `function` (an old
+onetrue-awk/gawk extension; POSIX, `gawk --posix` and mawk treat `func` as an
+ordinary name). Where the reference awks disagree about functions, pyawk's
+choices are listed in DESIGN.md ("User-defined functions").
 
 ## Tests
 

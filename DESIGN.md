@@ -91,8 +91,10 @@ programs always should). A string used as a dynamic regex is unescaped
 literal dot needs `"\\."` or a regex literal `/\./`. Regex literals never go
 through string escaping: `regex.py` handles their escapes. onetrue's
 `t.sub0` exercises the `sub` case.
-* A NAME immediately followed by `(` is a `FUNC_NAME`; calling one raises
-  "user-defined functions are not supported yet".
+* A NAME immediately followed by `(` is a `FUNC_NAME` (a call). With a
+  space, `f (x)` is a NAME followed by a parenthesised group, i.e. the
+  concatenation of variable `f` and `(x)`; this is how POSIX tells calls
+  from concatenation. `func` is not a keyword (see "User-defined functions").
 
 ## Parser
 
@@ -120,6 +122,18 @@ $                                   ( grouping )
 * `for (k in a)` is recognised by a 4-token lookahead.
 * Lvalues: `Var`, `Index`, `Field`. Anything else on the left of `=`,
   `++`/`--` is a syntax error.
+* Context checks while parsing: `return` only inside a function body,
+  `break`/`continue` only inside a loop (`loop_depth`, reset to 0 for a
+  function body, so a loop in the caller does not count), `next` not inside
+  a function. All are syntax errors, as in the reference awks.
+* Function definitions go into `Program.functions` (name → `Function`).
+  Because a function may be used before it is defined, some checks run
+  after the whole program is parsed (`Parser.check_functions`), using the
+  list of every name used as a variable/array and every call site:
+  a function name used as a variable or array (which also catches the
+  call-with-a-space mistake `f (x)`), a parameter named like a function,
+  and calls with more arguments than parameters (a warning, collected in
+  `Program.warnings` and printed on stderr by the CLI).
 
 ## Runtime
 
@@ -145,6 +159,94 @@ $                                   ( grouping )
   closed first and stdout flushed after (matches mawk's observable order).
 * Arithmetic: division/modulo by zero is a runtime error (like all awks);
   `%` is C `fmod`; `^` overflows to inf.
+
+## User-defined functions
+
+**Call frames.** The interpreter's `frame` attribute is the set of local
+variables of the call now running: a dict from parameter name to `Cell`
+(`None` outside any function). A call builds a new dict, makes it current,
+runs the body and puts the caller's dict back (in a `finally`, so `exit`
+and errors restore it too). The chain of saved dicts is the call stack;
+Python's own call stack holds it, because calls nest as the interpreter
+recurses. Variable access (`get_var`, `set_var`, `get_array`) looks in the
+current frame first and falls back to the globals (`vars`, `arrays`). Only
+the current frame is visible: AWK has no nested scopes, so a function
+never sees its caller's locals.
+
+**Cells and types.** AWK variables are untyped until first used, and a
+parameter can become a scalar or an array depending on what the body does
+with it. A `Cell` has three slots: `value` (scalar, once known), `array`
+(a Python dict, once known) and `link` (see below). Reading or assigning
+makes an untyped cell a scalar; subscripting, `in`, `for in`, `delete`
+or `split` into it makes it an array. Using it the other way afterwards
+is a runtime error ("can't use scalar x as array" / "can't use array x in
+scalar context"), as in all three references. `return arr` is the same
+error: functions return scalars only.
+
+**Passing arguments** (`_bind_arg`), evaluated left to right in the caller:
+
+| Argument | Callee's cell |
+|---|---|
+| any expression other than a bare name, including `a[i]` and `$1` | `value` = a copy (scalars are by value) |
+| a name holding an array (global, or a local of the caller) | `array` = **the same dict**: arrays are by reference, so changes and deletes are seen by the caller |
+| a name holding a scalar | `value` = a copy |
+| a name never used yet (untyped) | `link` = the caller's Cell, or the global's name |
+
+The `link` case implements a rule all three references agree on: if the
+callee uses an untyped argument as an array, the caller's variable becomes
+that array (`function f(a) { a[1] = 7 }  BEGIN { f(x); print x[1] }`
+prints 7, also through several levels of calls and from a caller's local).
+When the callee first uses the cell as an array, `_cell_array` follows the
+link, creates the array in the caller (or reuses one) and shares it. If
+the callee uses it as a scalar instead, the link is dropped and the caller's
+variable stays untouched (scalars are by value). Missing arguments give fresh
+untyped cells: these are the function's local variables, new on every call
+(so recursive calls each get their own local arrays). Extra arguments are
+evaluated for their side effects and dropped.
+
+Reading an unset *global* now stores it as an (empty) scalar, so
+`print x; x[1] = 1` and `print x; f(x)` (f using its parameter as an
+array) are errors, as in all three references. `length(x)` is the
+exception: it checks the type with `var_kind` without deciding it, so an
+unused `x` stays untyped (onetrue-awk and mawk; gawk disagrees).
+
+**return / exit.** `return` raises `_ReturnEx(value)`, caught by the call;
+falling off the end returns the uninitialized value. `exit` inside a
+function is the normal `ExitEx` and unwinds every call (END still runs
+after an `exit` in BEGIN or a rule). Function lookup happens at call time,
+so calling an undefined function is a runtime error only when executed.
+
+**Recursion.** Each AWK call level costs about eight nested Python calls
+(call → block → statement → expression → ...). When the program defines
+functions, `Interpreter.run` raises Python's recursion limit to 400 000
+and runs the program in a helper thread with a 1 GiB stack (thread stacks
+are allocated lazily, so this costs memory only as it is used); this
+gives AWK recursion around 40 000 levels deep for simple functions (gawk
+and mawk manage 10 000; onetrue-awk crashes there). Runaway recursion ends
+with "function call nesting too deep" instead of a crash.
+
+**Reference disagreements and decisions.** Checked with onetrue-awk
+20260426, `gawk --posix` 5.4.1 and mawk 1.3.4:
+
+| Question | onetrue | gawk --posix | mawk | pyawk |
+|---|---|---|---|---|
+| `func` as a synonym of `function` | yes | no (ordinary name) | no | no; a helpful error if a program starts `func f(` |
+| function name used as a variable (even in code never run), `f (x)` | runs | error | error | syntax error |
+| parameter named like another function (POSIX forbids) | allowed | error | allowed | syntax error (POSIX + gawk; *not* the majority) |
+| special variable as a parameter (POSIX forbids) | only `NF` rejected | all rejected | `NF FS RS CONVFMT OFMT` rejected | all rejected (POSIX + gawk; could be relaxed) |
+| special variable as a function name | allowed | error | error | syntax error |
+| `next` inside a function | syntax error | allowed | syntax error | syntax error |
+| more arguments than parameters | warning, runs | warning, runs | fatal | warning on stderr, runs (extras are evaluated) |
+| call of an undefined function | error when called | error when called | error at parse | runtime error when called |
+| scalar variable passed, used as an array in the callee | runs | error | error | runtime error |
+| `print x; f(x)` (f uses it as an array) | runs | error | error | runtime error |
+| `length(x)` then `x[1] = 1` | runs | error | runs | runs |
+| recursion depth 10 000 | crash | ok | ok | ok |
+
+All three agree (and so does pyawk) that duplicate functions, duplicate
+parameters, a parameter named like its own function, a builtin or keyword
+name, `return` outside a function, and `break`/`continue` outside a loop
+are syntax errors.
 
 ## Regular expressions
 
@@ -192,7 +294,9 @@ onetrue-awk (checked against `gawk --posix`) and the case is listed in
 `awk_tests/golden/OVERRIDES` (`CATEGORY/NAME  reason`). `regen_golden.py`
 never rewrites a listed `.out`, and `--check` reports it as `KEEP ...
 differs (expected)` rather than counting it (or suggests removing the entry
-if mawk ever agrees). Currently: `builtins/undefined_escapes`.
+if mawk ever agrees). Currently: `builtins/undefined_escapes`, and
+`functions/extra_args` (mawk rejects a call with too many arguments; the
+other two warn and run it).
 
 ## Known issues / limitations
 
@@ -205,5 +309,9 @@ if mawk ever agrees). Currently: `builtins/undefined_escapes`.
   the current input is treated as an independent stream.
 * `srand()` seed is time-based in seconds; `rand()` uses Python's Mersenne
   Twister, so sequences differ from other awks.
+* AWK recursion depth is limited (about 40 000 levels for a simple
+  function, fewer for bodies with deeply nested statements); beyond that,
+  a clean error. Function calls are fairly slow (a new dict and Cells per
+  call; `return` is a Python exception).
 * Performance: ~5 µs per simple record (≈30× slower than mawk). Fine for the
   test corpus; a closure-compilation pass is the planned fix.
