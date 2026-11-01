@@ -628,10 +628,9 @@ class Interpreter:
     @staticmethod
     def _run_special(block: Any) -> None:
         """Run a compiled BEGIN or END block."""
-        # The parser accepts ``next`` in BEGIN and END; it is reported as
-        # an error when it runs, as before the compiler existed.
-        if block() is NEXT:
-            raise AwkRuntimeError("next used in BEGIN or END action")
+        # The parser rejects ``next`` written directly in BEGIN or END, so
+        # a block can only end normally here.
+        block()
 
     def _main_loop(self, prog: CompiledProgram) -> None:
         """The implicit AWK loop: for each record, run each matching rule."""

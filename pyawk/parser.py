@@ -94,7 +94,7 @@ class Parser:
         self.in_function: str | None = None
         self.loop_depth = 0
         # "BEGIN" or "END" while parsing one of those actions, else None
-        # (``nextfile`` is a syntax error there).
+        # (``next`` and ``nextfile`` are syntax errors there).
         self.in_special: str | None = None
         # Collected for the end-of-program checks (see check_functions):
         # (name, line) for every variable/array use, and (name, number of
@@ -445,6 +445,11 @@ class Parser:
             self.advance()
             return ast.Break() if tt == "break" else ast.Continue()
         if tt == "next":
+            # There is no current record in BEGIN or END.  POSIX leaves
+            # ``next`` there undefined; mawk and gawk reject it while
+            # parsing (onetrue-awk only when it runs), and so do we.
+            if self.in_special is not None:
+                raise AwkSyntaxError(f"next used in {self.in_special} action", t.line)
             # onetrue-awk and mawk reject ``next`` in a function body (gawk
             # allows it); we follow the majority.
             if self.in_function is not None:

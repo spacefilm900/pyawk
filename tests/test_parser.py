@@ -134,6 +134,23 @@ def test_nextfile_outside_a_rule_is_a_syntax_error(src: str) -> None:
         parse(src)
 
 
+@pytest.mark.parametrize(
+    "src",
+    [
+        "BEGIN { next }",
+        "END { next }",
+        "BEGIN { if (0) next }",  # rejected even where it could never run
+        "END { while (1) { next } }",
+    ],
+)
+def test_next_in_begin_or_end_is_a_syntax_error(src: str) -> None:
+    # POSIX leaves ``next`` in BEGIN/END undefined; mawk and gawk reject it
+    # while parsing (onetrue-awk only when it runs), so the program never
+    # starts and prints nothing.
+    with pytest.raises(AwkSyntaxError, match="next used in (BEGIN|END)"):
+        parse(src)
+
+
 def test_nextfile_is_a_keyword() -> None:
     with pytest.raises(AwkSyntaxError):
         parse("BEGIN { nextfile = 1 }")
