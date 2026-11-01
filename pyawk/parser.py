@@ -869,7 +869,8 @@ class Parser:
             if name == "length":
                 return ast.Call("length", [])
             raise self.error(f"expected '(' after {name}")
-        args = self.parse_call_args()
+        starts: list[str] = []
+        args = self.parse_call_args(starts)
         # A wrong number of arguments is a syntax error, even in code that
         # never runs (mawk and gawk; onetrue-awk for most builtins).
         lo, hi = ARITY[name]
@@ -881,13 +882,29 @@ class Parser:
             else:
                 want = f"{lo} to {hi}"
             raise AwkSyntaxError(f"function {name} called with {len(args)} args (takes {want})", t.line)
+        # split's array must be a plain name.  mawk and onetrue-awk reject
+        # anything else while parsing (gawk only when it runs).
+        if name == "split" and not (type(args[1]) is ast.Var and starts[1] == "NAME"):
+            raise AwkSyntaxError("split: second argument must be an array name", t.line)
+        # sub/gsub assign to their target, so it must be a variable, an
+        # element or a field.  POSIX leaves anything else undefined; mawk
+        # and onetrue-awk reject it while parsing.  A parenthesised target
+        # such as ``(x)`` is a value, not a variable, in all three
+        # reference awks: every lvalue starts with a name or ``$``, so an
+        # argument starting with ``(`` cannot be one.
+        if name in ("sub", "gsub") and len(args) == 3:
+            if not isinstance(args[2], ast.LVALUE_TYPES) or starts[2] == "(":
+                raise AwkSyntaxError(f"{name}: third argument must be a variable, element or field", t.line)
         return ast.Call(name, args)
 
-    def parse_call_args(self) -> list[ast.Expr]:
+    def parse_call_args(self, starts: list[str] | None = None) -> list[ast.Expr]:
         """``( [expr, expr, ...] )`` after a builtin or user function name.
 
         Inside the parentheses ``>`` is a comparison again, even within a
-        print statement, and newlines may follow the commas.
+        print statement, and newlines may follow the commas.  If a list
+        ``starts`` is given, the type of each argument's first token is
+        appended to it (so parse_builtin can tell ``x`` from ``(x)``, which
+        make the same tree).
         """
         self.expect("(")
         saved = self.no_gt
@@ -896,7 +913,13 @@ class Parser:
             self.skip_newlines()
             args: list[ast.Expr] = []
             if not self.at(")"):
-                args = self.parse_expr_list()
+                while True:
+                    if starts is not None:
+                        starts.append(self.tok.type)
+                    args.append(self.parse_expr())
+                    if not self.accept(","):
+                        break
+                    self.skip_newlines()
             self.skip_newlines()
             self.expect(")")
         finally:

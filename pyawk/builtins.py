@@ -24,7 +24,6 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 from . import ast
-from .errors import AwkRuntimeError
 from .regex import LONG_TEXT, for_long
 from .values import UNINIT, StrNum, Value, make_strnum, special_float_str, to_num, to_str
 
@@ -568,13 +567,8 @@ def _split(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     """
     it, sval, s = c.it, c.sval, c.expr(args[0])
     target = args[1]
-    if not isinstance(target, ast.Var):
-
-        def not_array() -> Value:
-            s()  # the string is evaluated before the mistake is noticed
-            raise AwkRuntimeError("split: second argument must be an array name")
-
-        return not_array
+    # The parser guarantees a plain name here (Parser.parse_builtin).
+    assert isinstance(target, ast.Var)
     arr = c.array(target.name)
     pieces_of: Callable[[str], list[str]]
     if len(args) == 3 and isinstance(args[2], ast.Regex):
@@ -619,32 +613,21 @@ def _sub_common(c: "Compiler", args: list[ast.Expr], global_: bool) -> Thunk:
             return float(count)
 
         return sub_record
-    if isinstance(target, ast.LVALUE_TYPES):
-        # Resolve the target once, so ``sub(/a/, "b", arr[i++])`` increments
-        # i only once even though we both read and write the element.
-        resolve, get_ref, set_ref = c.ref(target), c.get_ref, c.set_ref
+    # The parser guarantees a variable, element or field (parse_builtin).
+    # Resolve the target once, so ``sub(/a/, "b", arr[i++])`` increments
+    # i only once even though we both read and write the element.
+    resolve, get_ref, set_ref = c.ref(target), c.get_ref, c.set_ref
 
-        def sub() -> Value:
-            pat = pattern()
-            r = repl()
-            ref = resolve()
-            result, count = substitute(pat, r, sval(get_ref(ref)), global_)
-            if count:  # only assign when something changed ($0 is not rebuilt otherwise)
-                set_ref(ref, result)
-            return float(count)
-
-        return sub
-    # Non-lvalue target: compute and discard (gawk warns; mawk errors).
-    e = c.expr(target)
-
-    def sub_value() -> Value:
+    def sub() -> Value:
         pat = pattern()
         r = repl()
-        # "_" is the conventional name for a value we ignore.
-        _, count = substitute(pat, r, sval(e()), global_)
+        ref = resolve()
+        result, count = substitute(pat, r, sval(get_ref(ref)), global_)
+        if count:  # only assign when something changed ($0 is not rebuilt otherwise)
+            set_ref(ref, result)
         return float(count)
 
-    return sub_value
+    return sub
 
 
 def _int_const_zero(node: ast.Expr) -> bool:

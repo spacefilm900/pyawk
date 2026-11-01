@@ -411,3 +411,28 @@ def test_builtin_argument_count_is_checked_when_parsing(call: str) -> None:
 )
 def test_builtin_argument_counts_that_are_allowed(call: str) -> None:
     parse(f"BEGIN {{ x = {call} }}")
+
+
+# split's second argument must be a plain array name: mawk and onetrue-awk
+# reject anything else while parsing (gawk only when it runs).
+@pytest.mark.parametrize("arg", ["3", "x[1]", "$1", "(a)", "a b", "f()"])
+def test_split_target_must_be_a_name(arg: str) -> None:
+    with pytest.raises(AwkSyntaxError, match="split"):
+        parse(f'function f() {{ }} BEGIN {{ if (0) split("a b", {arg}) }}')
+
+
+# The target of sub/gsub must be a variable, an element or a field.  POSIX
+# leaves anything else undefined; mawk and onetrue-awk reject it while
+# parsing; gawk accepts a literal or a sum but rejects ``x y``, ``(x)`` and
+# ``length``.  Note that ``(x)`` is rejected by all three: the parentheses
+# make it a value, not a variable.
+@pytest.mark.parametrize("arg", ['"c"', "1 + 2", "x y", "(x)", "($1)", "length", "x++", "$x++", "f()"])
+@pytest.mark.parametrize("fn", ["sub", "gsub"])
+def test_sub_target_must_be_an_lvalue(fn: str, arg: str) -> None:
+    with pytest.raises(AwkSyntaxError, match=f"{fn}: third argument"):
+        parse(f'function f() {{ }} BEGIN {{ if (0) {fn}(/a/, "b", {arg}) }}')
+
+
+@pytest.mark.parametrize("arg", ["x", "x[1]", "x[1, 2]", "$1", "$(1)", "$NF", "$++x"])
+def test_sub_targets_that_are_allowed(arg: str) -> None:
+    parse(f'BEGIN {{ sub(/a/, "b", {arg}); gsub(/a/, "b", {arg}) }}')
