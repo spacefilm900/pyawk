@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Differential regex testing: pyawk against mawk, onetrue-awk and gawk.
+
+usage: scripts/regex_fuzz.py [--check] [--show N] [--category CAT] [--jobs J]
+
+Without ``--check``: run every pattern of the corpus (awk_tests/regex_corpus.py:
+curated categories plus seeded random EREs) through the three reference
+awks, take the majority answer line by line, and write it to
+awk_tests/regex_differential.json -- the recorded results that
+tests/test_regex_differential.py checks pyawk against.  Then report how
+pyawk compares.
+
+With ``--check``: do not run the references; just compare pyawk with the
+recorded file (what the pytest test does, but as a summary table).
+
+Voting is per output line, i.e. per (pattern, input) pair.  A reference
+that rejects the pattern (non-zero exit status) counts as answering
+``ERROR`` on every line.  Where no two references agree, the line is
+recorded as a *split* (``null``, with each reference's answer kept under
+``splits``) and not tested; DESIGN.md lists such cases as open decisions.
+Patterns in ``regex_corpus.POSIX_OVERRIDES`` record gawk's answer instead
+of the vote (the reason is stored under ``override``).
+
+``--show N`` prints the first N mismatching lines with the three
+references' answers next to pyawk's.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "awk_tests"))
+import regex_corpus as rc  # noqa: E402
+
+RESULTS = ROOT / "awk_tests" / "regex_differential.json"
+
+REFERENCES = {
+    "mawk": ["/usr/bin/mawk"],
+    "onetrue": ["/workspace/refs/onetrue-awk/a.out"],
+    "gawk": ["/workspace/refs/local/bin/gawk", "--posix"],
+}
+
+
+TIMEOUT = "TIMEOUT"
+
+
+def run_reference(cmd: list[str], entry: rc.Entry) -> list[str]:
+    """The probe's output lines from one reference awk (ERROR lines if it fails)."""
+    try:
+        proc = subprocess.run(
+            [*cmd, rc.probe_program(entry.pattern)],
+            input=rc.stdin_text(entry).encode("utf-8", "surrogateescape"),
+            capture_output=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        # A reference that hangs (mawk does on some interval patterns) is
+        # simply wrong on every line; it cannot win a vote.
+        return [TIMEOUT] * len(entry.inputs)
+    return split_lines(proc.stdout.decode("utf-8", "surrogateescape") if proc.returncode == 0 else rc.ERROR, entry)
+
+
+def split_lines(out: str, entry: rc.Entry) -> list[str]:
+    """One answer per input: the output lines, or ERROR throughout."""
+    if out == rc.ERROR:
+        return [rc.ERROR] * len(entry.inputs)
+    lines = out.split("\n")[: len(entry.inputs)]
+    return lines + [rc.ERROR] * (len(entry.inputs) - len(lines))
+
+
+def regenerate(entries: list[rc.Entry], jobs: int) -> dict:
+    def answers(entry: rc.Entry) -> dict[str, list[str]]:
+        return {name: run_reference(cmd, entry) for name, cmd in REFERENCES.items()}
+
+    with ThreadPoolExecutor(jobs) as pool:
+        all_answers = list(pool.map(answers, entries))
+    records = []
+    for entry, ans in zip(entries, all_answers):
+        expected: list[str | None] = []
+        splits: dict[str, dict[str, str]] = {}
+        override = rc.POSIX_OVERRIDES.get(entry.pattern)
+        for i, inp in enumerate(entry.inputs):
+            if override:
+                expected.append(ans["gawk"][i])
+                continue
+            votes = Counter(ans[name][i] for name in REFERENCES)
+            value, n = votes.most_common(1)[0]
+            if n >= 2:
+                expected.append(value)
+            else:
+                expected.append(None)
+                splits[inp] = {name: ans[name][i] for name in REFERENCES}
+        rec = {"category": entry.category, "pattern": entry.pattern, "inputs": list(entry.inputs),
+               "expected": expected}
+        if splits:
+            rec["splits"] = splits
+        if override:
+            rec["override"] = override
+        # Which reference was outvoted where (handy when reading the file).
+        outvoted = sorted({name for name in REFERENCES for i, e in enumerate(expected)
+                           if e is not None and ans[name][i] != e})
+        if outvoted:
+            rec["outvoted"] = outvoted
+        records.append(rec)
+    return {"about": "majority answers of mawk, onetrue-awk and gawk --posix; regenerate with scripts/regex_fuzz.py",
+            "records": records}
+
+
+def compare(data: dict, show: int, category: str | None) -> int:
+    """Print pyawk's mismatches per category; return the mismatching line count."""
+    per_cat: dict[str, list[int]] = {}  # category -> [lines, bad lines, patterns, bad patterns, split lines]
+    shown = 0
+    total_bad = 0
+    for rec in data["records"]:
+        if category and rec["category"] != category:
+            continue
+        entry = rc.Entry(rec["category"], rec["pattern"], tuple(rec["inputs"]))
+        got = split_lines(rc.run_pyawk(entry), entry)
+        stats = per_cat.setdefault(rec["category"], [0, 0, 0, 0, 0])
+        bad_here = 0
+        for inp, exp, g in zip(rec["inputs"], rec["expected"], got):
+            if exp is None:
+                stats[4] += 1
+                continue
+            stats[0] += 1
+            if g != exp:
+                bad_here += 1
+                if shown < show:
+                    shown += 1
+                    print(f"/{rec['pattern']}/ on {inp!r}: expected {exp!r}, pyawk {g!r}")
+        stats[1] += bad_here
+        stats[2] += 1
+        stats[3] += bad_here > 0
+        total_bad += bad_here
+    print(f"{'category':<12} {'patterns':>8} {'bad':>5} {'lines':>6} {'bad':>5} {'split':>5}")
+    sums = [0, 0, 0, 0, 0]
+    for cat, (lines, bad, pats, badp, split) in per_cat.items():
+        print(f"{cat:<12} {pats:>8} {badp:>5} {lines:>6} {bad:>5} {split:>5}")
+        for i, v in enumerate((lines, bad, pats, badp, split)):
+            sums[i] += v
+    print(f"{'total':<12} {sums[2]:>8} {sums[3]:>5} {sums[0]:>6} {sums[1]:>5} {sums[4]:>5}")
+    return total_bad
+
+
+def explain(entry: rc.Entry) -> None:
+    """Print each reference's and pyawk's answer for one pattern, per input."""
+    answers = {name: run_reference(cmd, entry) for name, cmd in REFERENCES.items()}
+    answers["pyawk"] = split_lines(rc.run_pyawk(entry), entry)
+    print("columns: RSTART RLENGTH ~ gsub-count gsub-result split-count:pieces")
+    for i, inp in enumerate(entry.inputs):
+        print(f"{inp!r}")
+        for name, lines in answers.items():
+            print(f"    {name:<8} {lines[i]}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--check", action="store_true", help="compare pyawk with the recorded file only")
+    ap.add_argument("--show", type=int, default=0, metavar="N", help="print the first N mismatches")
+    ap.add_argument("--category", help="only this category")
+    ap.add_argument("--jobs", type=int, default=8)
+    ap.add_argument("--explain", metavar="ERE", help="show every reference's answer and pyawk's for one pattern")
+    ap.add_argument("--inputs", help="with --explain: comma-separated inputs (default: the a/b/c set)")
+    args = ap.parse_args()
+    if args.explain is not None:
+        inputs = tuple(args.inputs.split(",")) if args.inputs is not None else rc.ABC_INPUTS
+        explain(rc.Entry("explain", args.explain, inputs))
+        return 0
+    if args.check:
+        data = json.loads(RESULTS.read_text())
+    else:
+        data = regenerate(rc.corpus(), args.jobs)
+        RESULTS.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n")
+        n_split = sum(1 for r in data["records"] for e in r["expected"] if e is None)
+        print(f"wrote {RESULTS.relative_to(ROOT)}: {len(data['records'])} patterns, {n_split} split lines")
+    compare(data, args.show, args.category)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
