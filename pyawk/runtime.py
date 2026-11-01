@@ -43,7 +43,7 @@ import threading
 from typing import IO, Any, Iterable
 
 from . import ast
-from .compiler import NEXT, CompiledProgram, Compiler
+from .compiler import NEXT, NEXTFILE, CompiledProgram, Compiler
 from .errors import AwkRuntimeError
 from .lexer import process_escapes
 from .regex import compile_ere
@@ -596,8 +596,13 @@ class Interpreter:
                     continue
                 if action is None:  # a bare pattern means { print }
                     self.out.write(self.record + self.str_of(vars_["ORS"]))
-                elif action() is NEXT:
+                    continue
+                sig = action()
+                if sig is NEXT:
                     break  # ``next``: abandon this record's rules
+                if sig is NEXTFILE:
+                    self.skip_file()  # and abandon the rest of the file
+                    break
 
     def _in_range(self, i: int, start: Any, end: Any) -> bool:
         """Does range rule number ``i`` (``start, end``) select this record?
@@ -646,6 +651,25 @@ class Interpreter:
             if self.reader is not self.io.stdin_reader:
                 self.reader.close()
             self.reader = None
+
+    def skip_file(self) -> None:
+        """``nextfile``: drop the rest of the current input file, so the next
+        record comes from the next operand (and FNR starts again at 1).
+
+        Standard input cannot be reopened, so skipping it means it is used
+        up: a later "-" operand or ``getline < "-"`` finds nothing, as in
+        mawk and gawk (onetrue-awk carries on where it stopped).  We do
+        not read the rest of it first, which could wait forever on a
+        terminal; the C awks do not either.
+        """
+        reader = self.reader
+        if reader is None:
+            return
+        if reader is self.io.stdin_reader:
+            reader.buf, reader.start, reader.eof = "", 0, True
+        else:
+            reader.close()
+        self.reader = None
 
     def _open_next_input(self) -> bool:
         """Advance through ARGV to the next file to read.

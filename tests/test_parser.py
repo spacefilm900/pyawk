@@ -1,7 +1,7 @@
 import pytest
 
 from pyawk import ast
-from pyawk.errors import AwkSyntaxError, AwkUnsupportedError
+from pyawk.errors import AwkSyntaxError
 from pyawk.parser import parse
 
 
@@ -114,9 +114,29 @@ def test_control_statements_parse() -> None:
     assert body[0].orelse is not None and body[1].orelse is not None
 
 
-def test_deferred_features_error_clearly() -> None:
-    with pytest.raises(AwkUnsupportedError):
-        parse("{ nextfile }")
+def test_nextfile_is_a_statement() -> None:
+    body = parse("{ if (FNR == 2) nextfile; print }").rules[0].action.body
+    assert type(body[0].then).__name__ == "NextFile"
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "BEGIN { nextfile }",
+        "END { if (0) nextfile }",
+        "function f() { nextfile } { f() }",
+    ],
+)
+def test_nextfile_outside_a_rule_is_a_syntax_error(src: str) -> None:
+    # mawk and gawk reject nextfile in BEGIN/END while parsing (onetrue-awk
+    # only when it runs); mawk and onetrue-awk reject it in a function.
+    with pytest.raises(AwkSyntaxError, match="nextfile"):
+        parse(src)
+
+
+def test_nextfile_is_a_keyword() -> None:
+    with pytest.raises(AwkSyntaxError):
+        parse("BEGIN { nextfile = 1 }")
 
 
 # ------------------------------------------------------------ range patterns

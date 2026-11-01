@@ -52,7 +52,7 @@ Python note: ``try: ... finally: ...`` runs the ``finally`` part however the
 from __future__ import annotations
 
 from . import ast
-from .errors import AwkSyntaxError, AwkUnsupportedError
+from .errors import AwkSyntaxError
 from .lexer import Token, tokenize
 
 ASSIGN_OPS = frozenset({"=", "+=", "-=", "*=", "/=", "%=", "^="})
@@ -93,6 +93,9 @@ class Parser:
         # loop (``loop_depth`` counts the loops we are inside).
         self.in_function: str | None = None
         self.loop_depth = 0
+        # "BEGIN" or "END" while parsing one of those actions, else None
+        # (``nextfile`` is a syntax error there).
+        self.in_special: str | None = None
         # Collected for the end-of-program checks (see check_functions):
         # (name, line) for every variable/array use, and (name, number of
         # arguments, line) for every user function call.
@@ -186,14 +189,15 @@ class Parser:
     def parse_item(self, prog: ast.Program) -> None:
         """One top-level item: BEGIN {...}, END {...}, pattern, or pattern {...}."""
         t = self.tok
-        if t.type == "BEGIN":
+        if t.type in ("BEGIN", "END"):
             self.advance()
             self.skip_newlines()
-            prog.begin.append(self.parse_block())
-        elif t.type == "END":
-            self.advance()
-            self.skip_newlines()
-            prog.end.append(self.parse_block())
+            self.in_special = t.type
+            try:
+                block = self.parse_block()
+            finally:
+                self.in_special = None
+            (prog.begin if t.type == "BEGIN" else prog.end).append(block)
         elif t.type == "function":
             self.parse_function(prog)
         elif t.type == "NAME" and t.value == "func" and self.peek(1).type == "FUNC_NAME":
@@ -448,7 +452,16 @@ class Parser:
             self.advance()
             return ast.Next()
         if tt == "nextfile":
-            raise AwkUnsupportedError("nextfile", t.line)
+            # There is no current file in BEGIN or END: mawk and gawk reject
+            # nextfile there while parsing (onetrue-awk only when it runs).
+            # In a function, mawk and onetrue-awk reject it (gawk allows it),
+            # just as for ``next``.
+            if self.in_special is not None:
+                raise AwkSyntaxError(f"nextfile used in {self.in_special} action", t.line)
+            if self.in_function is not None:
+                raise AwkSyntaxError(f"nextfile is not allowed inside a function ({self.in_function})", t.line)
+            self.advance()
+            return ast.NextFile()
         if tt == "return":
             if self.in_function is None:
                 raise AwkSyntaxError("return outside a function", t.line)

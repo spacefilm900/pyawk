@@ -298,6 +298,11 @@ class Next(Stmt):
 
 
 @dataclass(slots=True)
+class NextFile(Stmt):
+    """``nextfile`` (POSIX 2024): skip the rest of the current input file."""
+
+
+@dataclass(slots=True)
 class Exit(Stmt):
     status: Optional[Expr] = None
 

@@ -88,3 +88,45 @@ def test_reader_gone_before_final_flush_kills_us_with_sigpipe() -> None:
     proc.stdout.close()
     assert proc.wait(timeout=20) == -signal.SIGPIPE
     assert proc.stderr.read() == ""
+
+
+# ---------------------------------------------------------------- nextfile
+@pytest.fixture
+def three_files(tmp_path: Path) -> list[str]:
+    names = []
+    for name, lines in (("a", 3), ("b", 2), ("c", 3)):
+        path = tmp_path / name
+        path.write_text("".join(f"{name}{i}\n" for i in range(1, lines + 1)))
+        names.append(str(path))
+    return names
+
+
+def test_nextfile_skips_rest_of_file_and_resets_fnr(three_files: list[str]) -> None:
+    out, code = awk('FNR == 2 { nextfile } { print FNR, NR, $0 } END { print NR, FNR, $0 }', "", *three_files)
+    assert code == 0
+    assert out == "1 1 a1\n1 3 b1\n1 5 c1\n6 2 c2\n"
+
+
+def test_nextfile_from_inside_loops(three_files: list[str]) -> None:
+    # The signal passes out of nested loops like ``next`` does.
+    prog = "{ for (i = 0; i < 3; i++) while (1) { print $0; nextfile } }"
+    assert awk(prog, "", *three_files)[0] == "a1\nb1\nc1\n"
+
+
+def test_nextfile_closes_the_file_and_runs_later_assignments(three_files: list[str]) -> None:
+    a, b, _ = three_files
+    assert awk("{ print v, $0; nextfile }", "", a, "v=7", b)[0] == " a1\n7 b1\n"
+
+
+def test_nextfile_on_stdin_discards_the_rest_of_it(three_files: list[str]) -> None:
+    # mawk and gawk: a later "-" operand (or getline from "-") finds
+    # standard input used up.  onetrue-awk carries on where it stopped.
+    a = three_files[0]
+    prog = '{ print FILENAME == "-" ? "stdin" : "file", $0; nextfile } END { print NR; print (getline x < "-") }'
+    assert awk(prog, "s1\ns2\ns3\n", "-", a, "-")[0] == "stdin s1\nfile a1\n2\n0\n"
+
+
+def test_nextfile_rule_order(three_files: list[str]) -> None:
+    # Rules after the nextfile are not run for that record, as with next.
+    out = awk('{ print "first", $0 } FNR == 1 { nextfile } { print "never", $0 }', "", *three_files)[0]
+    assert out == "first a1\nfirst b1\nfirst c1\n"

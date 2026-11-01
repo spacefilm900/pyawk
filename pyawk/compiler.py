@@ -41,17 +41,17 @@ The three kinds of compiled function:
   ``while``, patterns, ``&&`` and ``!`` use these, which saves turning
   True into 1.0 and back again;
 * a **statement** (``StmtFn``) returns None normally, or a *signal* (see
-  below) for ``break``, ``continue``, ``next`` and ``return``.
+  below) for ``break``, ``continue``, ``next``, ``nextfile`` and ``return``.
 
 Control flow as return values
 -----------------------------
 ``break`` must leave the enclosing loop, which may be several nested
 statements away.  The tree-walker raised an exception for it.  Here a
 statement returns a signal object instead (``BREAK``, ``CONTINUE``,
-``NEXT`` or ``RETURN``), and every block and loop passes on a signal it
-does not handle.  The parser guarantees that ``break``/``continue`` occur
-only inside loops, ``return`` only inside functions and ``next`` never in
-a function, so a signal can only travel through statements, never through
+``NEXT``, ``NEXTFILE`` or ``RETURN``), and every block and loop passes on
+a signal it does not handle.  The parser guarantees that
+``break``/``continue`` occur only inside loops, ``return`` only inside
+functions and ``next``/``nextfile`` never in a function, so a signal can only travel through statements, never through
 an expression.  ``exit`` and errors still raise exceptions, because they
 *can* happen inside a function called from the middle of an expression.
 
@@ -104,6 +104,7 @@ class Signal:
 BREAK = Signal("break")
 CONTINUE = Signal("continue")
 NEXT = Signal("next")
+NEXTFILE = Signal("nextfile")
 # ``return``: the value travels in ``interp.ret_value``, set just before.
 RETURN = Signal("return")
 
@@ -567,6 +568,9 @@ class Compiler:
 
     def _s_Next(self, node: ast.Next) -> StmtFn:
         return _const(NEXT)
+
+    def _s_NextFile(self, node: ast.NextFile) -> StmtFn:
+        return _const(NEXTFILE)
 
     def _s_Return(self, node: ast.Return) -> StmtFn:
         it = self.it
