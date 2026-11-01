@@ -266,3 +266,29 @@ def test_locale_variables_and_precedence():
     prog2 = 'BEGIN { print length("\xc3\xa9"); system("echo $LC_CTYPE") }'
     p = pyawk([prog2], env={"LC_CTYPE": "", "LANG": "C"}, locale="")
     assert p.stdout == b"2\n\n"
+
+
+@pytest.mark.parametrize("locale", ["C", "C.UTF-8"])
+def test_non_ascii_assignment_names_are_rejected(locale):
+    # -v é=1: onetrue-awk, gawk and mawk all refuse it and stop.
+    p = pyawk(["-v", "\xc3\xa9=1", 'BEGIN { print "ran" }'], locale=locale)
+    assert p.returncode == 2 and p.stdout == b"" and b"improper assignment" in p.stderr
+
+
+@pytest.mark.parametrize("locale", ["C", "C.UTF-8"])
+def test_only_ascii_digits_count_in_printf_specs_and_intervals(locale):
+    # "٣" is ARABIC-INDIC DIGIT THREE.  Python's str.isdigit() says it is a
+    # digit; awk does not.  printf copies the bad spec as text (gawk), and
+    # a{٣} is not an interval, so it matches the literal text "a{٣}".
+    p = pyawk(['BEGIN { printf "%\xd9\xa3d|\\n", 5 }'], locale=locale)
+    assert p.stdout == b"%\xd9\xa3d|\n"
+    p = pyawk(["{ print ($0 ~ /^a{\xd9\xa3}$/), ($0 ~ /^a{3}$/) }"], b"aaa\n", locale)
+    assert p.stdout == b"0 1\n"
+
+
+def test_equivalence_class_holds_only_the_character_itself():
+    # pyawk compares characters by code point, so [=é=] is just é.  gawk
+    # uses glibc's equivalence classes (e also matches); onetrue-awk does
+    # not match even é.  DESIGN.md lists this as a choice.
+    p = pyawk(["{ print ($0 ~ /^[[=\xc3\xa9=]]$/) }"], b"\xc3\xa9\ne\n\xc3\x89\n")
+    assert p.stdout == b"1\n0\n0\n"
