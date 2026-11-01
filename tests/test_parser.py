@@ -116,7 +116,60 @@ def test_control_statements_parse() -> None:
 
 def test_deferred_features_error_clearly() -> None:
     with pytest.raises(AwkUnsupportedError):
-        parse("/a/, /b/")
+        parse("{ nextfile }")
+
+
+# ------------------------------------------------------------ range patterns
+def test_range_pattern_with_and_without_action() -> None:
+    prog = parse("/a/, /b/ { print 1 }\nNR == 2, NR == 4")
+    r1, r2 = prog.rules
+    assert r1.pattern == ast.Regex("a") and r1.end == ast.Regex("b")
+    assert r1.action is not None
+    assert r2.pattern == ast.Compare("==", ast.Var("NR"), ast.Num(2.0))
+    assert r2.end == ast.Compare("==", ast.Var("NR"), ast.Num(4.0))
+    assert r2.action is None
+
+
+def test_plain_rule_has_no_end_pattern() -> None:
+    assert parse("/a/ { print }").rules[0].end is None
+
+
+def test_range_comma_binds_loosest() -> None:
+    # The comma is below every operator, so the whole of `a || b` is the
+    # start condition (not `a || (b, /x/)`); the same goes for ?: and =.
+    r = parse('$1 == "a" || $2, /x/').rules[0]
+    assert isinstance(r.pattern, ast.Or) and r.end == ast.Regex("x")
+    assert isinstance(parse("$1 > 2 ? 1 : 0, /5/").rules[0].pattern, ast.Cond)
+    assert isinstance(parse("x = /2/, /4/").rules[0].pattern, ast.Assign)
+
+
+def test_range_allows_newline_after_comma_only() -> None:
+    assert parse("/a/,\n\n/b/").rules[0].end == ast.Regex("b")
+    with pytest.raises(AwkSyntaxError):
+        parse("/a/\n, /b/")
+
+
+def test_range_rules_separated_by_semicolon() -> None:
+    prog = parse("/1/, /2/; /5/")
+    assert prog.rules[0].end == ast.Regex("2") and prog.rules[1].end is None
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "BEGIN, /x/ { print }",  # BEGIN/END cannot be range endpoints
+        "/x/, END { print }",
+        "/x/, BEGIN",
+        "(/a/, /b/)",  # a range is not an expression: no nesting ...
+        "/a/, /b/ || /c/, /d/",  # ... and only one comma
+        "/a/, /b/, /c/",
+        "/a/, { print }",  # the end condition is required
+        "{ x = (/a/, /b/) }",
+    ],
+)
+def test_range_pattern_errors(src: str) -> None:
+    with pytest.raises(AwkSyntaxError):
+        parse(src)
 
 
 # ------------------------------------------------------- user-defined functions

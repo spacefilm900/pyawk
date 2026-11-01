@@ -203,15 +203,33 @@ class Parser:
         elif t.type == "{":
             prog.rules.append(ast.Rule(None, self.parse_block()))
         else:
-            pattern = self.parse_expr()
-            if self.at(","):
-                raise AwkUnsupportedError("range patterns", self.tok.line)
+            pattern = self.parse_pattern()
+            # ``start, end``: a range pattern.  The comma is not an operator:
+            # it is only recognised here, after a complete expression, so it
+            # binds more loosely than everything (``a || b, c`` means
+            # ``(a || b), c``) and a range can never appear *inside* an
+            # expression.  As after any comma in AWK, newlines may follow it
+            # (but not precede it: a newline before it ends the rule).
+            end = None
+            if self.accept(","):
+                self.skip_newlines()
+                if self.at("BEGIN", "END", "{"):
+                    raise self.error("expected an expression after ',' in a range pattern")
+                end = self.parse_pattern()
             if self.at("{"):
-                prog.rules.append(ast.Rule(pattern, self.parse_block()))
+                prog.rules.append(ast.Rule(pattern, self.parse_block(), end))
             else:
                 if not self.at("NEWLINE", ";", "EOF"):
                     raise self.error("expected newline or '{' after pattern")
-                prog.rules.append(ast.Rule(pattern, None))
+                prog.rules.append(ast.Rule(pattern, None, end))
+
+    def parse_pattern(self) -> ast.Expr:
+        """One pattern expression.  A parenthesised list such as
+        ``(/a/, /b/)`` is not a pattern: it is only valid before ``in``
+        (all three reference awks reject it here too)."""
+        e = self.parse_expr()
+        self.check_no_group(e)
+        return e
 
     def parse_function(self, prog: ast.Program) -> None:
         """``function name(p1, p2, ...) [newlines] { body }``.

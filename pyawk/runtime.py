@@ -459,6 +459,10 @@ class Interpreter:
         self.argi = 1
         self.reader: RecordReader | None = None
         self.opened_any = False
+        # One "is this range open?" flag per main rule (see _in_range); only
+        # range rules ``start, end`` use theirs.  ``[False] * n`` is a list
+        # of n False values.
+        self.range_open: list[bool] = [False] * len(program.rules)
 
         self.seed = 0.0
         self.rng = random.Random(0)
@@ -578,9 +582,14 @@ class Interpreter:
             self.vars["FNR"] = to_num(self.vars["FNR"]) + 1.0
             self.set_record(rec)
             try:
-                for rule in rules:
+                # ``enumerate`` yields (position, rule) pairs; the position
+                # indexes this rule's flag in self.range_open.
+                for i, rule in enumerate(rules):
                     pat = rule.pattern
-                    if pat is not None and not self.test(pat):
+                    if rule.end is not None:
+                        if not self._in_range(i, rule):
+                            continue
+                    elif pat is not None and not self.test(pat):
                         continue
                     if rule.action is None:  # a bare pattern means { print }
                         self.out.write(self.get_record_text() + self.str_of(self.vars["ORS"]))
@@ -588,6 +597,31 @@ class Interpreter:
                         self._block(rule.action)
             except _NextEx:
                 pass  # ``next``: abandon this record's rules, go to the next record
+
+    def _in_range(self, i: int, rule: ast.Rule) -> bool:
+        """Does range rule number ``i`` (``start, end``) select this record?
+
+        Each range rule has one flag in self.range_open, True while the
+        range is open.  The algorithm, which all three reference awks share:
+
+        * Closed: test only ``start``.  If it fails, the record is not
+          selected.  If it matches, the range opens *and* ``end`` is tested
+          on this same record, so a record matching both is a range of one.
+        * Open: test only ``end``.  The record is selected either way; if
+          ``end`` matches, the range closes after this record.
+
+        The end test happens *before* the action runs, so ``next`` or
+        ``exit`` in the action cannot keep a range open.  A record skipped
+        by ``next`` in an earlier rule, or swallowed by ``getline``, is
+        never tested at all.  The flags are never reset between input
+        files, so a range can continue from one file into the next.
+        """
+        if not self.range_open[i]:
+            if not self.test(rule.pattern):  # type: ignore[arg-type]  # a range always has a start
+                return False
+        # Opened just now, or already open: does this record close it?
+        self.range_open[i] = not self.test(rule.end)  # type: ignore[arg-type]
+        return True
 
     def test(self, node: ast.Expr) -> bool:
         """Evaluate a condition; a bare /regex/ means ``$0 ~ /regex/``."""

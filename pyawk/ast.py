@@ -318,10 +318,19 @@ class Delete(Stmt):
 @dataclass(slots=True)
 class Rule(Node):
     """``pattern { action }``; a missing pattern matches every record and a
-    missing action means ``{ print }``."""
+    missing action means ``{ print }``.
+
+    A *range pattern* ``start, end { action }`` keeps ``pattern`` as the
+    start condition and puts the end condition in ``end``; for an ordinary
+    rule ``end`` is None.  A range selects every record from one that
+    matches ``start`` through the next one that matches ``end`` (inclusive),
+    then waits for ``start`` again.  Whether a range is currently "open" is
+    run-time state, so it lives in the interpreter, not in this node.
+    """
 
     pattern: Optional[Expr]
     action: Optional[Block]
+    end: Optional[Expr] = None  # written last so ``Rule(pat, action)`` still works
 
 
 @dataclass(slots=True)
