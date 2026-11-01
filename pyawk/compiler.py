@@ -51,9 +51,12 @@ statement returns a signal object instead (``BREAK``, ``CONTINUE``,
 ``NEXT``, ``NEXTFILE`` or ``RETURN``), and every block and loop passes on
 a signal it does not handle.  The parser guarantees that
 ``break``/``continue`` occur only inside loops, ``return`` only inside
-functions and ``next``/``nextfile`` never in a function, so a signal can only travel through statements, never through
-an expression.  ``exit`` and errors still raise exceptions, because they
-*can* happen inside a function called from the middle of an expression.
+functions and ``nextfile`` never in a function, so those signals only
+travel through statements, never through an expression.  ``next`` *may*
+appear in a function (POSIX allows it), and the call can be in the middle
+of an expression; so a function body that ends with NEXT raises
+``NextFromFunction`` instead, which the main loop catches.  ``exit`` and
+errors also raise exceptions, for the same reason.
 
 Local variables
 ---------------
@@ -108,6 +111,17 @@ NEXT = Signal("next")
 NEXTFILE = Signal("nextfile")
 # ``return``: the value travels in ``interp.ret_value``, set just before.
 RETURN = Signal("return")
+
+
+class NextFromFunction(Exception):
+    """``next`` executed inside a user-defined function.
+
+    A plain NEXT signal cannot leave a function, because the call may be
+    part of an expression (``x = f() + 1``).  So the call raises this
+    instead; Interpreter._main_loop catches it and moves on to the next
+    record, and Interpreter._run_special turns it into an error in BEGIN
+    or END, where there is no record to skip.
+    """
 
 
 def _raiser(msg: str) -> Thunk:
@@ -1259,7 +1273,7 @@ class Compiler:
            fresh, untyped cells.
         3. Run the body with the new frame.  ``return`` stores its value in
            ``it.ret_value`` and signals RETURN; falling off the end returns
-           "uninitialized".
+           "uninitialized"; ``next`` raises NextFromFunction.
         4. Put the caller's frame back, however the body was left (return,
            exit, error): that is what ``finally`` guarantees.
         """
@@ -1289,6 +1303,8 @@ class Compiler:
                 it.frame = saved
             if sig is RETURN:
                 return it.ret_value
+            if sig is NEXT:
+                raise NextFromFunction
             return UNINIT
 
         return call

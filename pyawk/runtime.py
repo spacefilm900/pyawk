@@ -43,7 +43,7 @@ import threading
 from typing import IO, Any, Callable, Iterable, TypeVar
 
 from . import ast
-from .compiler import NEXT, NEXTFILE, CompiledProgram, Compiler
+from .compiler import NEXT, NEXTFILE, CompiledProgram, Compiler, NextFromFunction
 from .errors import AwkRuntimeError
 from .lexer import process_escapes
 from .regex import LONG_TEXT, LongestPattern, compile_span, for_long
@@ -599,14 +599,14 @@ class Interpreter:
         try:
             try:
                 for block in prog.begin:
-                    self._run_special(block)
+                    self._run_special(block, "BEGIN")
                 if prog.rules or prog.end:
                     self._main_loop(prog)
             except ExitEx as e:
                 self.exit_code = e.code
             try:
                 for block in prog.end:
-                    self._run_special(block)
+                    self._run_special(block, "END")
             except ExitEx as e:
                 self.exit_code = e.code
             finished = True
@@ -626,11 +626,15 @@ class Interpreter:
         return self.exit_code
 
     @staticmethod
-    def _run_special(block: Any) -> None:
-        """Run a compiled BEGIN or END block."""
-        # The parser rejects ``next`` written directly in BEGIN or END, so
-        # a block can only end normally here.
-        block()
+    def _run_special(block: Any, which: str) -> None:
+        """Run a compiled BEGIN or END block (``which`` names it)."""
+        # The parser rejects ``next`` written directly in BEGIN or END, but
+        # a function called from here may still execute one.  There is no
+        # record to skip, so (like gawk) report it as a fatal error.
+        try:
+            block()
+        except NextFromFunction:
+            raise AwkRuntimeError(f"next called from a function in {which}") from None
 
     def _main_loop(self, prog: CompiledProgram) -> None:
         """The implicit AWK loop: for each record, run each matching rule."""
@@ -648,21 +652,27 @@ class Interpreter:
             fnr = vars_["FNR"]
             vars_["FNR"] = (fnr if type(fnr) is float else to_num(fnr)) + 1.0
             self.set_record(rec)
-            for i, (pat, end, action) in rules:
-                if end is not None:
-                    if not self._in_range(i, pat, end):  # type: ignore[arg-type]
+            # (A ``try`` costs nothing in Python unless something is raised.)
+            try:
+                for i, (pat, end, action) in rules:
+                    if end is not None:
+                        if not self._in_range(i, pat, end):  # type: ignore[arg-type]
+                            continue
+                    elif pat is not None and not pat():
                         continue
-                elif pat is not None and not pat():
-                    continue
-                if action is None:  # a bare pattern means { print }
-                    self.out.write(self.record + self.str_of(vars_["ORS"]))
-                    continue
-                sig = action()
-                if sig is NEXT:
-                    break  # ``next``: abandon this record's rules
-                if sig is NEXTFILE:
-                    self.skip_file()  # and abandon the rest of the file
-                    break
+                    if action is None:  # a bare pattern means { print }
+                        self.out.write(self.record + self.str_of(vars_["ORS"]))
+                        continue
+                    sig = action()
+                    if sig is NEXT:
+                        break  # ``next``: abandon this record's rules
+                    if sig is NEXTFILE:
+                        self.skip_file()  # and abandon the rest of the file
+                        break
+            except NextFromFunction:
+                # ``next`` inside a function called from a pattern or an
+                # action: abandon this record's rules just the same.
+                pass
 
     def _in_range(self, i: int, start: Any, end: Any) -> bool:
         """Does range rule number ``i`` (``start, end``) select this record?

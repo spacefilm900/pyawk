@@ -219,3 +219,39 @@ def test_too_many_arguments_warns_on_stderr() -> None:
     assert proc.stdout == "1\n"
     assert "warning" in proc.stderr and "g" in proc.stderr
     assert proc.returncode == 0
+
+
+# ``next`` inside a function.  POSIX allows it: the only restriction is that
+# it is undefined when "invoked in a BEGIN or END action" (nextfile, by
+# contrast, is explicitly undefined in a function).  gawk follows that;
+# mawk and onetrue-awk reject it at parse time.  POSIX is clear, so it wins.
+def test_next_in_a_function_abandons_the_record() -> None:
+    prog = "function f() { if ($1 == 2) next; return 1 } { f(); print }"
+    assert awk(prog, "1\n2\n3\n") == "1\n3\n"
+
+
+def test_next_from_nested_calls_and_from_a_pattern() -> None:
+    # The signal passes through every active call, and a call in a pattern
+    # can abandon the record before any action runs (gawk agrees).
+    prog = "function g() { next } function f() { g() } { f(); print }"
+    assert awk(prog, "1\n2\n") == ""
+    prog = 'function f() { if ($1 == 2) next; return 1 } f() { print "x" $0 } { print }'
+    assert awk(prog, "1\n2\n3\n") == "x1\n1\nx3\n3\n"
+
+
+def test_next_in_a_function_restores_the_callers_frame() -> None:
+    # After ``next`` leaves g, the main rule's own locals must be intact for
+    # the next record: f's parameter ``a`` is still f's own.
+    prog = "function g(b) { b = 9; next } function f(a) { a = $1; g(a) } { f(1) } END { print NR }"
+    assert awk(prog, "1\n2\n3\n") == "3\n"
+
+
+@pytest.mark.parametrize("special", ["BEGIN", "END"])
+def test_next_invoked_from_begin_or_end_is_a_runtime_error(special: str) -> None:
+    # gawk: "fatal: `next' cannot be called from a `BEGIN' rule", after
+    # printing what came before.
+    prog = f'function f() {{ next }} {special} {{ print "a"; f(); print "b" }}'
+    out = io.StringIO()
+    with pytest.raises(AwkRuntimeError, match=f"next called from a function in {special}"):
+        run(prog, (), (), stdout=out, stdin=io.BytesIO(b""))
+    assert out.getvalue() == "a\n"

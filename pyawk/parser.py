@@ -450,17 +450,19 @@ class Parser:
             # parsing (onetrue-awk only when it runs), and so do we.
             if self.in_special is not None:
                 raise AwkSyntaxError(f"next used in {self.in_special} action", t.line)
-            # onetrue-awk and mawk reject ``next`` in a function body (gawk
-            # allows it); we follow the majority.
-            if self.in_function is not None:
-                raise AwkSyntaxError(f"next is not allowed inside a function ({self.in_function})", t.line)
+            # In a function body it is allowed.  POSIX restricts ``next``
+            # only when "invoked in a BEGIN or END action", which implies
+            # a call from a function is fine (gawk agrees; mawk and
+            # onetrue-awk reject it).  A call from BEGIN or END is caught
+            # when it happens (see Interpreter._run_special).
             self.advance()
             return ast.Next()
         if tt == "nextfile":
             # There is no current file in BEGIN or END: mawk and gawk reject
             # nextfile there while parsing (onetrue-awk only when it runs).
-            # In a function, mawk and onetrue-awk reject it (gawk allows it),
-            # just as for ``next``.
+            # In a function, POSIX 2024 says nextfile is undefined (unlike
+            # ``next``); mawk and onetrue-awk reject it, gawk allows it, and
+            # we follow the majority.
             if self.in_special is not None:
                 raise AwkSyntaxError(f"nextfile used in {self.in_special} action", t.line)
             if self.in_function is not None:

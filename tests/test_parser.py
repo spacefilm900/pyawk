@@ -269,7 +269,6 @@ def test_func_is_not_a_keyword() -> None:
         "BEGIN { for (k in f) ; } function f() { }",
         "BEGIN { return 1 }",  # return outside a function
         "{ return }",
-        "function f() { next }",  # next inside a function
         "function f() { break }",  # break outside a loop
         "BEGIN { continue }",
         "function f(a { }",
