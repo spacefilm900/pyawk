@@ -393,7 +393,11 @@ def expand_replacement(repl: str) -> list[str | None]:
 # patterns and replacements, so these stay small; they are emptied if a
 # program generates many.
 _TEMPLATE_CACHE: dict[str, str] = {}
-_NONEMPTY_CACHE: dict[re.Pattern[str], bool] = {}
+# Keyed by the pattern's text and flags, not by the compiled pattern: the
+# hash of a compiled pattern is recomputed from its whole compiled program
+# on every lookup, which for a Unicode class (thousands of entries) cost
+# more than the substitution itself.  A string caches its hash.
+_NONEMPTY_CACHE: dict[tuple[str, int], bool] = {}
 _SUB_CACHE_MAX = 256
 
 
@@ -422,7 +426,8 @@ def _never_matches_empty(pattern: "re.Pattern[str] | LongestPattern") -> bool:
     """
     if type(pattern) is not re.Pattern:
         return False  # a LongestPattern: always the general path
-    answer = _NONEMPTY_CACHE.get(pattern)
+    key = (pattern.pattern, pattern.flags)
+    answer = _NONEMPTY_CACHE.get(key)
     if answer is None:
         try:
             from re import _parser  # type: ignore[attr-defined]
@@ -432,7 +437,7 @@ def _never_matches_empty(pattern: "re.Pattern[str] | LongestPattern") -> bool:
             answer = False
         if len(_NONEMPTY_CACHE) >= _SUB_CACHE_MAX:
             _NONEMPTY_CACHE.clear()
-        _NONEMPTY_CACHE[pattern] = answer
+        _NONEMPTY_CACHE[key] = answer
     return answer
 
 

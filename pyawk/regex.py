@@ -558,18 +558,73 @@ def _char_text(o: int) -> str:
     return f"\\u{o:04x}" if o < 0x10000 else f"\\U{o:08x}"
 
 
+def _ranges_text(ranges: Ranges) -> str:
+    """The inside of a Python ``[...]`` for these ranges."""
+    return "".join(
+        _char_text(lo) if lo == hi else _char_text(lo) + ("" if hi == lo + 1 else "-") + _char_text(hi)
+        for lo, hi in ranges
+    )
+
+
+# Python's regex compiler stores the part of a character set below U+10000
+# as a table (one lookup per character) but the part above it as a list of
+# ranges that is checked one by one.  So with a Unicode class, which has
+# hundreds of ranges above U+10000 (CJK extensions, historic scripts,
+# emoji), every ordinary character that is *not* in the set went through
+# that whole list: gsub(/[[:alpha:]]x/, ...) ran about four times slower
+# in UTF-8 mode than in the C locale.  Such sets are therefore written as
+#     (?:[the part below U+10000]|(?=[\U00010000-\U0010ffff])[the rest])
+# where the look-ahead ``(?=...)`` is a single range test that lets
+# ordinary characters skip the long list.  The meaning is unchanged: still
+# exactly one character from the same set.  Small sets (and everything in
+# the C locale, where all characters are below U+0100) keep the plain form.
+_ASTRAL = 0x10000
+_SPLIT_ABOVE = 16  # ranges above U+FFFF before a set is split
+
+
+def _complement(ranges: Ranges) -> Ranges:
+    """All code points (0 to U+10FFFF) that are not in ``ranges``."""
+    out: list[tuple[int, int]] = []
+    nxt = 0  # the first code point not yet accounted for
+    for lo, hi in sorted(ranges):
+        if lo > nxt:
+            out.append((nxt, lo - 1))
+        nxt = max(nxt, hi + 1)
+    if nxt <= 0x10FFFF:
+        out.append((nxt, 0x10FFFF))
+    return tuple(out)
+
+
+def _big_set_text(ranges: Ranges, negated: bool) -> str | None:
+    """The split form described above, or None if the plain form will do."""
+    if sum(1 for _, hi in ranges if hi >= _ASTRAL) <= _SPLIT_ABOVE:
+        return None
+    if negated:  # [^...] is written as the set of everything else
+        ranges = _complement(ranges)
+    low = [(lo, min(hi, _ASTRAL - 1)) for lo, hi in ranges if lo < _ASTRAL]
+    high = [(max(lo, _ASTRAL), hi) for lo, hi in ranges if hi >= _ASTRAL]
+    look = "(?=[" + _char_text(_ASTRAL) + "-" + _char_text(0x10FFFF) + "])"
+    if not low and not high:  # [^...] of every character: matches nothing
+        return "[^\\x00-\\U0010ffff]"
+    if not low:  # grouped, so that a following * or + covers both parts
+        return "(?:" + look + "[" + _ranges_text(high) + "])"
+    if not high:
+        return "[" + _ranges_text(low) + "]"
+    return "(?:[" + _ranges_text(low) + "]|" + look + "[" + _ranges_text(high) + "])"
+
+
 def _emit(node: object) -> str:
     """The Python ``re`` text for a syntax tree."""
     t = type(node)
     if t is Chars:
+        big = _big_set_text(node.ranges, node.negated)  # type: ignore[attr-defined]
+        if big is not None:
+            return big
         if not node.ranges:  # type: ignore[attr-defined]
             return "." if node.negated else "[^\\x00-\\U0010ffff]"  # type: ignore[attr-defined]
         if not node.negated and len(node.ranges) == 1 and node.ranges[0][0] == node.ranges[0][1]:  # type: ignore[attr-defined]
             return _char_text(node.ranges[0][0])  # type: ignore[attr-defined]
-        body = "".join(
-            _char_text(lo) if lo == hi else _char_text(lo) + ("" if hi == lo + 1 else "-") + _char_text(hi)
-            for lo, hi in node.ranges  # type: ignore[attr-defined]
-        )
+        body = _ranges_text(node.ranges)  # type: ignore[attr-defined]
         return "[" + ("^" if node.negated else "") + body + "]"  # type: ignore[attr-defined]
     if t is Cat:
         return "".join("(?:" + _emit(x) + ")" if type(x) is Alt else _emit(x) for x in node.items)  # type: ignore[attr-defined]

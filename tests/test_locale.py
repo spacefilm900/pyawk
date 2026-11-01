@@ -292,3 +292,70 @@ def test_equivalence_class_holds_only_the_character_itself():
     # not match even é.  DESIGN.md lists this as a choice.
     p = pyawk(["{ print ($0 ~ /^[[=\xc3\xa9=]]$/) }"], b"\xc3\xa9\ne\n\xc3\x89\n")
     assert p.stdout == b"1\n0\n0\n"
+
+
+# ------------------------------------- big sets in Python patterns
+def test_big_sets_skip_the_long_range_list(utf8):
+    # A Unicode class has hundreds of ranges above U+FFFF; its Python form
+    # puts a one-range look-ahead in front of them (see _big_set_text).
+    from pyawk import regex
+
+    text = regex.compile_ere("[[:alpha:]]x").pattern
+    assert "(?=[\\U00010000-\\U0010ffff])" in text
+    assert "(?=" not in regex.compile_ere("[a-zé]x").pattern  # small sets: plain
+    charset.set_mode(False)
+    assert "(?=" not in regex.compile_ere("[[:alpha:]]x").pattern  # C locale: ASCII
+
+
+@pytest.mark.parametrize(
+    "ere", ["[[:alpha:]]", "[^[:alpha:]]", "[[:alpha:]]+", "^[^[:alnum:]]*$", "x[[:punct:][:digit:]]{2}y"]
+)
+def test_big_sets_match_the_same_characters(utf8, ere):
+    # The split form must accept exactly what the tree's own set test
+    # (and the automaton used for long texts) accepts.
+    from pyawk import regex
+
+    samples = ["a", "é", "ж", "中", "\U00020000", "\U0001f600", "\U00010400", " ", "1", "!", "\u3000",
+               "\udcff", "x1!y", "x!!y", "\U00010FFF", "\U0010FFFF", ""]
+    pat = regex.compile_ere(ere)
+    long_pat = regex.for_long(pat)
+    for s in samples:
+        short = pat.search(s)
+        long_ = long_pat.search(s)
+        assert (short and short.span()) == (long_ and long_.span()), (ere, s)
+
+
+def test_complement_covers_everything_else():
+    from pyawk.regex import _complement
+
+    assert _complement(((0, 9), (20, 29))) == ((10, 19), (30, 0x10FFFF))
+    assert _complement(((0, 0x10FFFF),)) == ()
+    assert _complement(((5, 9), (7, 12))) == ((0, 4), (13, 0x10FFFF))
+
+
+def test_negated_big_set_of_everything_matches_nothing():
+    import re
+
+    from pyawk.regex import _big_set_text
+
+    # 17 ranges above U+FFFF that together with 0..U+FFFF cover everything.
+    step = (0x110000 - 0x10000) // 17
+    ranges = ((0, 0xFFFF),) + tuple(
+        (0x10000 + i * step, 0x10FFFF if i == 16 else 0x10000 + (i + 1) * step - 1) for i in range(17)
+    )
+    text = _big_set_text(ranges, negated=True)
+    assert text is not None and not re.search(text, "a\U0001f600\U0010ffff")
+    assert re.fullmatch(_big_set_text(ranges, negated=False), "\U0001f600")
+
+
+def test_substitution_cache_is_keyed_by_pattern_text():
+    # Hashing a compiled pattern rehashes its whole program, which is big
+    # for Unicode classes; the cache uses the pattern's text instead.
+    import re
+
+    from pyawk import builtins
+
+    builtins._NONEMPTY_CACHE.clear()
+    assert builtins.substitute(re.compile("a+"), "x", "baab", True) == ("bxb", 1)
+    assert list(builtins._NONEMPTY_CACHE) == [("a+", re.compile("a+").flags)]
+
