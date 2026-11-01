@@ -350,11 +350,25 @@ class IOManager:
         self.outputs: dict[str, tuple[IO[str], subprocess.Popen[bytes] | None]] = {}
         self.inputs: dict[str, RecordReader] = {}
         self.stdin_reader: RecordReader | None = None
+        # The special names "/dev/stdout" and "/dev/stderr" (used by print)
+        # and "-" and "/dev/stdin" (used by getline <) that the program has
+        # used since it last closed them.  They are never really opened,
+        # so they are not in self.outputs or self.inputs; this set lets
+        # close() tell "open" (returns 0) from "never opened" (returns -1).
+        self.specials_used: set[str] = set()
 
     def get_stdin_reader(self) -> RecordReader:
         if self.stdin_reader is None:
             self.stdin_reader = RecordReader(self.stdin)
         return self.stdin_reader
+
+    def use_up_stdin(self) -> None:
+        """Make standard input look finished: drop what is buffered and read
+        no more.  It cannot be reopened, so after close("-") or ``nextfile``
+        every later read of it finds nothing (mawk and gawk).  We do not
+        read the rest first, which could wait forever on a terminal."""
+        reader = self.get_stdin_reader()
+        reader.buf, reader.start, reader.eof = "", 0, True
 
     def get_output(self, kind: str, name: str) -> IO[str]:
         """Stream for ``>``, ``>>`` or ``|`` (kind) to ``name``, opening it once."""
@@ -366,8 +380,10 @@ class IOManager:
         # file called "-" (only gawk treats it as stdout).  For getline,
         # "-" does mean standard input (get_input_file).
         if name == "/dev/stdout":
+            self.specials_used.add(name)
             return self.stdout
         if name == "/dev/stderr":
+            self.specials_used.add(name)
             return sys.stderr
         proc = None
         try:
@@ -391,6 +407,7 @@ class IOManager:
             return reader
         _check_name(name, "getline")
         if name in ("-", "/dev/stdin"):
+            self.specials_used.add(name)
             return self.get_stdin_reader()
         try:
             reader = RecordReader(open(name, "rb"))
@@ -417,7 +434,30 @@ class IOManager:
         onetrue-awk don't either), so a command's output can come before
         lines we printed after starting it.  Starting a command does flush
         everything, so lines printed before it always come first.
+
+        The special names are never really opened (see specials_used).
+        Closing one that the program used returns 0, as in all three
+        reference awks:
+
+        * "/dev/stdout" and "/dev/stderr" are flushed but stay usable (as in
+          gawk; mawk and onetrue-awk really close the descriptor, so later
+          output to standard output is lost);
+        * "-" and "/dev/stdin" use up standard input, since it cannot be
+          reopened: later getline < "-", plain getline and the main input
+          loop all find nothing (all three references agree).
+
+        A special name the program never used returns -1 like any other
+        name that is not open (gawk).
         """
+        if name in self.specials_used:
+            self.specials_used.discard(name)
+            if name == "/dev/stdout":
+                self.stdout.flush()
+            elif name == "/dev/stderr":
+                sys.stderr.flush()
+            else:
+                self.use_up_stdin()
+            return 0
         status = -1
         entry = self.outputs.pop(name, None)
         if entry is not None:
@@ -728,15 +768,14 @@ class Interpreter:
 
         Standard input cannot be reopened, so skipping it means it is used
         up: a later "-" operand or ``getline < "-"`` finds nothing, as in
-        mawk and gawk (onetrue-awk carries on where it stopped).  We do
-        not read the rest of it first, which could wait forever on a
-        terminal; the C awks do not either.
+        mawk and gawk (onetrue-awk carries on where it stopped); see
+        IOManager.use_up_stdin.
         """
         reader = self.reader
         if reader is None:
             return
         if reader is self.io.stdin_reader:
-            reader.buf, reader.start, reader.eof = "", 0, True
+            self.io.use_up_stdin()
         else:
             reader.close()
         self.reader = None

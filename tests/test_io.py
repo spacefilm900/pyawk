@@ -191,3 +191,42 @@ def test_named_fflush_lets_broken_pipe_through() -> None:
     # A reader that has gone away must reach the CLI's SIGPIPE handling.
     with pytest.raises(BrokenPipeError):
         _io_table_with(_FailingStream(BrokenPipeError())).flush("out")
+
+
+# ---------------------------------------------------------- close() of the
+# special names.  POSIX: close returns zero if the close was successful.
+def test_close_dev_stdout_after_printing_to_it_returns_zero_and_keeps_stdout() -> None:
+    # All three references return 0.  Afterwards gawk keeps writing to
+    # standard output, while mawk and onetrue-awk have closed it and lose
+    # (or fail on) later output.  Closing the *name* "/dev/stdout" should
+    # not take standard output away from the rest of the program, so we
+    # follow gawk; the earlier output is flushed.
+    assert awk('BEGIN { print "a" > "/dev/stdout"; r = close("/dev/stdout"); print r; print "b" }') == (
+        "a\n0\nb\n",
+        0,
+    )
+
+
+def test_close_dev_stderr_after_printing_to_it_returns_zero(capsys: pytest.CaptureFixture[str]) -> None:
+    out, _ = awk('BEGIN { print "e" > "/dev/stderr"; print close("/dev/stderr"); print "x" > "/dev/stderr" }')
+    assert out == "0\n"  # all three references
+
+
+def test_close_of_a_special_name_never_opened_returns_minus_one() -> None:
+    # Nothing was opened, so nothing was closed successfully (gawk).  mawk
+    # and onetrue-awk close the real descriptor for /dev/stdout, and return
+    # 0 for /dev/stderr; all three return -1 for "-".
+    assert awk('BEGIN { print close("/dev/stdout"), close("/dev/stderr"), close("-"), close("/dev/stdin") }') == (
+        "-1 -1 -1 -1\n",
+        0,
+    )
+
+
+@pytest.mark.parametrize("name", ["-", "/dev/stdin"])
+def test_close_of_stdin_read_by_getline_uses_it_up(name: str) -> None:
+    # All three references (mawk crashes on /dev/stdin): close returns 0,
+    # and standard input cannot be reopened, so later reads of it find
+    # nothing -- getline < name, plain getline and the main loop.
+    prog = f'BEGIN {{ getline x < "{name}"; print x, close("{name}")'
+    prog += f'; print (getline y < "{name}"); print (getline z) }} {{ print "main", $0 }}'
+    assert awk(prog, "1\n2\n3\n") == ("1 0\n0\n0\n", 0)
