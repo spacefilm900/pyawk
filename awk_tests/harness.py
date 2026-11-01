@@ -6,9 +6,11 @@ optional ``<name>.args`` holds extra command-line options (shell syntax),
 e.g. ``-F:``; they are placed before ``-f <name>.awk``.
 
 Each case runs as ``<awk> [args] -f <name>.awk <name>.in`` with the
-category directory as the working directory.
+category directory as the working directory.  The same function runs
+either pyawk or a reference awk, which is what makes the outputs comparable.
 """
 
+# Treat type hints as text, so newer syntax such as ``list[str]`` is allowed.
 from __future__ import annotations
 
 import os
@@ -24,12 +26,18 @@ REPO = ROOT.parent
 CATEGORIES = ("basic", "fields", "patterns", "control", "arrays", "builtins", "one_liners")
 
 
+# ``@dataclass`` generates the constructor from the annotated fields below,
+# so ``Case("basic", "print_all", path)`` just works; ``frozen=True`` makes
+# instances read-only.
 @dataclass(frozen=True)
 class Case:
+    """One golden test: the files ``<directory>/<name>.{awk,in,out,args}``."""
+
     category: str
     name: str
     directory: Path
 
+    # ``@property``: read as ``case.id`` without parentheses.
     @property
     def id(self) -> str:
         return f"{self.category}/{self.name}"
@@ -42,6 +50,7 @@ class Case:
         return shlex.split(p.read_text()) if p.exists() else []
 
     def command(self, awk: list[str]) -> list[str]:
+        # ``[*a, *b, ...]`` builds one list from the items of a, then b, etc.
         return [*awk, *self.extra_args(), "-f", f"{self.name}.awk", f"{self.name}.in"]
 
     def expected(self) -> str:
@@ -49,6 +58,7 @@ class Case:
 
 
 def discover(categories: tuple[str, ...] = CATEGORIES) -> list[Case]:
+    """All cases, one per ``.awk`` file, in a stable (sorted) order."""
     cases: list[Case] = []
     for cat in categories:
         d = GOLDEN / cat
@@ -60,10 +70,17 @@ def discover(categories: tuple[str, ...] = CATEGORIES) -> list[Case]:
 
 
 def pyawk_command() -> list[str]:
+    """Run pyawk with the same Python that is running us (e.g. the venv's)."""
     return [sys.executable, "-m", "pyawk"]
 
 
 def run_case(case: Case, awk: list[str], timeout: float = 20.0) -> subprocess.CompletedProcess[str]:
+    """Run one case with the given awk command and capture its output.
+
+    PYTHONPATH lets ``python -m pyawk`` find the package without installing
+    it; LC_ALL=C gives every awk the same, simple locale.  stdin is empty so
+    a program that wrongly reads it cannot hang.
+    """
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO) + os.pathsep + env.get("PYTHONPATH", "")
     env["LC_ALL"] = "C"

@@ -1,12 +1,19 @@
 """Builtin functions and the printf/sprintf formatter.
 
+Role in the pipeline: called by the runtime whenever the program uses a
+builtin such as ``length``, ``substr``, ``gsub`` or ``printf``.  Entry
+points: the ``BUILTINS`` table and ``format_printf``.
+
 Pure helpers (``format_printf``, ``substr``, ``substitute`` ...) are kept
 free of interpreter state so they can be unit tested; ``BUILTINS`` maps each
 builtin name to an adapter ``fn(interp, arg_nodes) -> Value`` that the
 runtime calls with the *unevaluated* argument nodes (needed for array
-arguments, lvalue targets and regex literals).
+arguments, lvalue targets and regex literals).  For example ``split(s, a)``
+must receive the *array* ``a`` itself, not its value, and ``sub(/x/, "y", v)``
+must be able to assign back to ``v``.
 """
 
+# Treat type hints as text, so newer syntax such as ``float | None`` is allowed.
 from __future__ import annotations
 
 import math
@@ -20,25 +27,40 @@ from . import ast
 from .errors import AwkRuntimeError
 from .values import UNINIT, StrNum, Value, make_strnum, special_float_str, to_num, to_str
 
+# ``TYPE_CHECKING`` is False when the program runs; the import below is only
+# seen by type checkers.  runtime.py imports this module, so importing it back
+# for real would create a circular import.  That is also why hints below
+# write the class name in quotes: "Interpreter".
 if TYPE_CHECKING:  # pragma: no cover
     from .runtime import Interpreter
 
 # ----------------------------------------------------------------- printf
+# One printf conversion: % flags width .precision letter, e.g. "%-5.2f".
+# The four parenthesised groups capture those four parts.
 _SPEC_RE = re.compile(r"%([-+ #0]*)(\*|\d+)?(?:\.(\*|\d*))?([a-zA-Z%])")
 
 
 def _to_c_int(n: float) -> int:
+    """Number -> integer for %d/%c/widths; inf and NaN become 0."""
     if n != n or n in (math.inf, -math.inf):
         return 0
     return int(n)
 
 
 def format_printf(fmt: str, args: list[Value], convfmt: str = "%.6g") -> str:
-    """Implement AWK printf/sprintf formatting (C semantics)."""
+    """Implement AWK printf/sprintf formatting (C semantics).
+
+    The format is scanned for ``%`` conversions; text between them is copied.
+    Each conversion consumes the next argument, and is rendered with Python's
+    own ``%`` operator, whose rules are those of C's printf.  Missing
+    arguments act as empty/zero rather than being an error.
+    """
     out: list[str] = []
     pos = 0
     argi = 0
 
+    # A function defined inside another can read the outer variables.
+    # ``nonlocal argi`` is needed because it also *changes* one of them.
     def next_arg() -> Value:
         nonlocal argi
         if argi < len(args):
@@ -55,10 +77,11 @@ def format_printf(fmt: str, args: list[Value], convfmt: str = "%.6g") -> str:
             break
         out.append(fmt[pos : m.start()])
         pos = m.end()
-        flags, width, prec, conv = m.groups()
+        flags, width, prec, conv = m.groups()  # unpack the 4 regex groups
         if conv == "%":
             out.append("%")
             continue
+        # "*" takes the width (or precision) from the next argument.
         if width == "*":
             w = _to_c_int(to_num(next_arg()))
             if w < 0:
@@ -74,6 +97,7 @@ def format_printf(fmt: str, args: list[Value], convfmt: str = "%.6g") -> str:
             out.append((spec + "d") % n)
         elif conv in "ouxX":
             n = _to_c_int(to_num(next_arg()))
+            # C reinterprets negative numbers as unsigned 64-bit values here.
             if n < 0:
                 n += 1 << 64
             out.append((spec + ("d" if conv == "u" else conv)) % n)
@@ -86,6 +110,8 @@ def format_printf(fmt: str, args: list[Value], convfmt: str = "%.6g") -> str:
             else:
                 out.append((spec + conv) % x)
         elif conv == "c":
+            # %c of a number is the character with that code; of a string,
+            # its first character.
             v = next_arg()
             if type(v) is float:
                 n = _to_c_int(v)
@@ -103,7 +129,13 @@ def format_printf(fmt: str, args: list[Value], convfmt: str = "%.6g") -> str:
 
 # ------------------------------------------------------------- string ops
 def substr(s: str, m: float, n: float | None = None) -> str:
-    """POSIX substr with rounding of fractional positions (gawk semantics)."""
+    """POSIX substr with rounding of fractional positions (gawk semantics).
+
+    AWK counts characters from 1, Python from 0.  We compute the 1-based
+    half-open range [start, end), clip it to the string, and then slice
+    with ``s[start-1 : end-1]`` (Python slices are also half-open).
+    ``m != m`` tests for NaN.
+    """
     if m != m:
         return ""
     start = _round(m)
@@ -129,11 +161,18 @@ def _round(x: float) -> float:
 
 
 def index(s: str, t: str) -> int:
+    # str.find returns a 0-based position or -1, so +1 gives AWK's answer
+    # (1-based position, 0 when not found).
     return s.find(t) + 1
 
 
 def expand_replacement(repl: str) -> list[str | None]:
-    """Pre-parse a sub/gsub replacement: ``None`` entries stand for ``&``."""
+    """Pre-parse a sub/gsub replacement: ``None`` entries stand for ``&``.
+
+    In the replacement ``&`` means "the matched text", ``\\&`` a literal
+    ampersand and ``\\\\`` a literal backslash.  E.g. ``"<&>"`` becomes
+    ``["<", None, ">"]``.
+    """
     parts: list[str | None] = []
     buf: list[str] = []
     i = 0
@@ -157,10 +196,20 @@ def expand_replacement(repl: str) -> list[str | None]:
 
 
 def substitute(pattern: re.Pattern[str], repl: str, s: str, global_: bool) -> tuple[str, int]:
-    """sub()/gsub() core with AWK empty-match rules; returns (result, count)."""
+    """sub()/gsub() core with AWK empty-match rules; returns (result, count).
+
+    We walk through ``s`` from position ``i``, copying text up to each match
+    and the rendered replacement in its place.  Patterns that can match the
+    empty string (``x*``) need care: an empty match is replaced, then one
+    character is copied so the scan always moves forward, and an empty match
+    directly after a non-empty one is skipped.  So
+    ``gsub(/x*/, "-", "abxd")`` gives ``-a-b-d-``.
+    """
     parts = expand_replacement(repl)
 
     def render(matched: str) -> str:
+        # A *generator expression* (like a list comprehension, without
+        # building the list): each part, with None replaced by the match.
         return "".join(matched if p is None else p for p in parts)
 
     out: list[str] = []
@@ -198,6 +247,11 @@ def substitute(pattern: re.Pattern[str], repl: str, s: str, global_: bool) -> tu
 
 
 # ----------------------------------------------------------- adapters
+# Each adapter below evaluates its own arguments (via ``it.eval``), checks
+# the argument count, and calls a pure helper.  ``it`` is the Interpreter.
+#
+# Type of an adapter: a function taking (Interpreter, list of nodes) and
+# returning a Value.
 BuiltinFn = Callable[["Interpreter", list[ast.Expr]], Value]
 
 
@@ -207,6 +261,7 @@ def _argc(name: str, args: list[ast.Expr], lo: int, hi: int) -> None:
 
 
 def _length(it: "Interpreter", args: list[ast.Expr]) -> Value:
+    """length, length(s), or length(array) (number of elements: an extension)."""
     _argc("length", args, 0, 1)
     if not args:
         return float(len(it.get_record_text()))
@@ -230,6 +285,11 @@ def _index(it: "Interpreter", args: list[ast.Expr]) -> Value:
 
 
 def _split(it: "Interpreter", args: list[ast.Expr]) -> Value:
+    """split(s, arr [, sep]): fill arr[1..n] and return n.
+
+    The separator follows FS rules (" " = runs of blanks, one character =
+    that character, longer = a regex); a /regex/ literal is used directly.
+    """
     _argc("split", args, 2, 3)
     s = it.str_of(it.eval(args[0]))
     target = args[1]
@@ -245,6 +305,8 @@ def _split(it: "Interpreter", args: list[ast.Expr]) -> Value:
         pieces = it.split_with_fs(s, it.str_of(it.get_var("FS")))
     arr = it.get_array(target.name)
     arr.clear()
+    # enumerate(pieces, 1) yields (1, first), (2, second), ...  Keys are
+    # strings because AWK array subscripts always are; elements are strnums.
     for k, piece in enumerate(pieces, 1):
         arr[str(k)] = make_strnum(piece)
     return float(len(pieces))
@@ -255,15 +317,19 @@ def _sub_common(it: "Interpreter", args: list[ast.Expr], global_: bool) -> Value
     _argc(name, args, 2, 3)
     pattern = it.regex_of(args[0])
     repl = it.str_of(it.eval(args[1]))
+    # The default target is $0.
     target: ast.Expr = args[2] if len(args) == 3 else ast.Field(ast.Num(0.0))
     if isinstance(target, ast.LVALUE_TYPES):
+        # Resolve the target once, so ``sub(/a/, "b", arr[i++])`` increments
+        # i only once even though we both read and write the element.
         ref = it.resolve(target)
         original = it.str_of(it.get_ref(ref))
         result, count = substitute(pattern, repl, original, global_)
-        if count:
+        if count:  # only assign when something changed ($0 is not rebuilt otherwise)
             it.set_ref(ref, result)
         return float(count)
     # Non-lvalue target: compute and discard (gawk warns; mawk errors).
+    # "_" is the conventional name for a value we ignore.
     _, count = substitute(pattern, repl, it.str_of(it.eval(target)), global_)
     return float(count)
 
@@ -277,6 +343,7 @@ def _gsub(it: "Interpreter", args: list[ast.Expr]) -> Value:
 
 
 def _match(it: "Interpreter", args: list[ast.Expr]) -> Value:
+    """match(s, re): sets RSTART (1-based, 0 if none) and RLENGTH (-1 if none)."""
     _argc("match", args, 2, 2)
     s = it.str_of(it.eval(args[0]))
     m = it.regex_of(args[1]).search(s)
@@ -292,11 +359,19 @@ def _match(it: "Interpreter", args: list[ast.Expr]) -> Value:
 def _sprintf(it: "Interpreter", args: list[ast.Expr]) -> Value:
     if not args:
         raise AwkRuntimeError("sprintf: no format")
+    # A list comprehension: evaluate every argument, collecting the results.
     vals = [it.eval(a) for a in args]
     return format_printf(it.str_of(vals[0]), vals[1:], it.convfmt)
 
 
 def _math1(fn: Callable[[float], float], name: str) -> BuiltinFn:
+    """Build an adapter for a one-argument math function such as sqrt.
+
+    Python's math functions raise errors where C returns inf or NaN
+    (e.g. log(0)); we return the C results, as other awks print them.
+    The inner function ``impl`` remembers ``fn`` and ``name`` (a *closure*).
+    """
+
     def impl(it: "Interpreter", args: list[ast.Expr]) -> Value:
         _argc(name, args, 1, 1)
         x = to_num(it.eval(args[0]))
@@ -353,6 +428,7 @@ def _system(it: "Interpreter", args: list[ast.Expr]) -> Value:
     cmd = it.str_of(it.eval(args[0]))
     it.io.flush_all()
     rc = subprocess.call(cmd, shell=True)
+    # Python reports "killed by signal N" as -N; awks report 256 + N.
     return float(rc if rc >= 0 else 256 - rc)
 
 
@@ -368,6 +444,8 @@ def _fflush(it: "Interpreter", args: list[ast.Expr]) -> Value:
     return 0.0
 
 
+# Dispatch table: the runtime looks up a builtin by name here and calls it,
+# instead of using a long if/elif chain over the names.
 BUILTINS: dict[str, BuiltinFn] = {
     "length": _length,
     "substr": _substr,

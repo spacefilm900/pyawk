@@ -1,9 +1,16 @@
 """Translate POSIX EREs (as used by AWK) into Python ``re`` patterns.
 
+Role in the pipeline: a helper for the runtime and builtins.  AWK regular
+expressions (POSIX "extended regular expressions", EREs) look almost like
+Python's, but differ in small ways, so instead of writing our own regex
+engine we rewrite each ERE into Python syntax and let Python's ``re`` module
+do the matching.  Entry point: ``compile_ere(text)``; ``translate`` is the
+pure text-to-text step.
+
 Differences handled:
 
 * ``$`` anchors only at the very end of the string (Python's ``$`` also
-  matches before a trailing newline) -> ``(?!\\n)\\Z``-free ``\\Z``.
+  matches before a trailing newline), so it is translated to ``\\Z``.
 * ``.`` matches newline (``re.DOTALL``).
 * Bracket expressions: POSIX classes such as ``[:alpha:]``, a leading ``]``
   as a literal, and escaping of characters Python treats specially inside
@@ -11,8 +18,12 @@ Differences handled:
 * AWK escapes: ``\\/`` and ``\\"`` are literals, ``\\b`` is backspace (not a
   word boundary), octal ``\\ddd``; unknown escapes of letters become the
   literal letter.
+
+Known gap: Python picks the *first* alternative that matches, while POSIX
+wants the *longest* match, so ``a|ab`` matches only "a" in "ab" here.
 """
 
+# Treat type hints as text, so newer syntax such as ``tuple[str, int]`` is allowed.
 from __future__ import annotations
 
 import re
@@ -20,6 +31,7 @@ from functools import lru_cache
 
 from .errors import AwkRuntimeError
 
+# POSIX named classes, as used inside brackets: [[:digit:]] -> [0-9].
 _CLASSES = {
     "alpha": "a-zA-Z",
     "digit": "0-9",
@@ -43,7 +55,11 @@ _ESCAPES = {
 
 
 def _escape(s: str, i: int) -> tuple[str, int]:
-    """Translate the escape starting at s[i] == '\\\\'; return (text, next_i)."""
+    """Translate the escape starting at s[i] == '\\\\'; return (text, next_i).
+
+    Returning a pair (a *tuple*) lets the caller write
+    ``text, i = _escape(s, i)``, unpacking both results in one assignment.
+    """
     if i + 1 >= len(s):
         return "\\\\", i + 1
     d = s[i + 1]
@@ -63,6 +79,11 @@ def _escape(s: str, i: int) -> tuple[str, int]:
 
 
 def translate(ere: str) -> str:
+    """Rewrite an ERE as an equivalent Python regex string.
+
+    Most characters mean the same in both syntaxes and are copied through;
+    only escapes, ``$`` and bracket expressions need rewriting.
+    """
     out: list[str] = []
     i = 0
     n = len(ere)
@@ -84,7 +105,12 @@ def translate(ere: str) -> str:
 
 
 def _bracket(s: str, i: int) -> tuple[str, int]:
-    """Translate a bracket expression starting at s[i] == '['."""
+    """Translate a bracket expression starting at s[i] == '['.
+
+    In POSIX a ``]`` right after ``[`` or ``[^`` is a literal member, and
+    ``[:alpha:]``-style class names may appear inside; Python knows neither,
+    and treats some characters (``[ & ~ |``) specially inside sets.
+    """
     n = len(s)
     j = i + 1
     parts = ["["]
@@ -107,6 +133,7 @@ def _bracket(s: str, i: int) -> tuple[str, int]:
                     raise AwkRuntimeError(f"unknown character class [:{name}:]")
                 parts.append(_CLASSES[name])
             else:
+                # [.x.] and [=x=] (collating/equivalence) treated as literal x.
                 parts.append(re.escape(name))
             j = end + 2
         elif c == "\\":
@@ -125,8 +152,11 @@ def _bracket(s: str, i: int) -> tuple[str, int]:
     return "".join(parts), j + 1
 
 
+# ``@lru_cache`` remembers results: compiling the same regex text again (e.g.
+# a pattern tested on every input line) returns the cached compiled pattern.
 @lru_cache(maxsize=512)
 def compile_ere(ere: str) -> re.Pattern[str]:
+    """Compile an AWK ERE; a bad regex is a runtime error (it may be dynamic)."""
     try:
         return re.compile(translate(ere), re.DOTALL)
     except re.error as exc:

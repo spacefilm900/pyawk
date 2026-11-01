@@ -1,3 +1,10 @@
+"""pytest loads this file automatically before the tests in this directory.
+
+It makes two directories importable without installing anything: the
+repository root (for the ``pyawk`` package) and awk_tests/ (for the shared
+golden-test ``harness`` module).
+"""
+
 import sys
 from pathlib import Path
 

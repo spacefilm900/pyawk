@@ -1,5 +1,31 @@
-"""Tree-walking interpreter: records, fields, variables, I/O and evaluation."""
+"""Tree-walking interpreter: records, fields, variables, I/O and evaluation.
 
+Role in the pipeline: cli -> lexer -> parser -> AST -> **runtime**.  The
+runtime receives the parsed ``ast.Program`` and runs it.  Entry point:
+``Interpreter(program, operands, assignments).run()``, which returns the
+exit status.
+
+"Tree-walking" means there is no compilation step: to evaluate a node we
+look at its type and run the matching method, which evaluates the node's
+children the same way (recursively).
+
+How an AWK program runs (``Interpreter.run``):
+
+1. Run the BEGIN blocks.
+2. Unless the program is only BEGIN blocks, read input records one at a
+   time (lines, by default), from each file operand or else standard input.
+   For each record, try every ``pattern { action }`` rule in order.
+3. Run the END blocks, then close all files and pipes.
+
+Main pieces in this file:
+
+* control-flow exceptions (break/continue/next/exit),
+* ``RecordReader``: splits an input stream into records according to RS,
+* ``IOManager``: files and pipes opened by ``print >``, ``getline <`` etc.,
+* ``Interpreter``: variables, arrays, fields and the evaluator itself.
+"""
+
+# Treat type hints as text, so newer syntax such as ``str | None`` is allowed.
 from __future__ import annotations
 
 import codecs
@@ -29,13 +55,25 @@ from .values import (
     to_str,
 )
 
+# Input bytes that are not valid UTF-8 are carried through unchanged
+# ("surrogateescape"), so binary-ish data is not corrupted or rejected.
 ENCODING = "utf-8"
 ERRORS = "surrogateescape"
+# An operand like ``n=5`` is an assignment, not a file name.
 _ASSIGN_ARG_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _WS_FIELDS_RE = re.compile(r"[^ \t\n]+")
 
 
 # ---------------------------------------------------------------- control flow
+# break, continue, next and exit must jump out of arbitrarily deep nested
+# method calls (the evaluator is recursive).  Python's way to do that is to
+# *raise* an exception: it unwinds the calls until a matching ``try: ...
+# except`` catches it.  So ``break`` raises _BreakEx and the loop methods
+# catch it; ``next`` raises _NextEx, caught by the per-record loop; ``exit``
+# raises ExitEx, caught in ``run``.  These are not errors, just jumps.
+#
+# ``class X(Exception): pass`` declares a new exception type with no extra
+# behaviour; the leading underscore marks a name as private to this module.
 class _BreakEx(Exception):
     pass
 
@@ -49,6 +87,8 @@ class _NextEx(Exception):
 
 
 class ExitEx(Exception):
+    """Raised by ``exit [code]``; carries the exit status."""
+
     def __init__(self, code: int) -> None:
         super().__init__(code)
         self.code = code
@@ -56,13 +96,23 @@ class ExitEx(Exception):
 
 # ---------------------------------------------------------------- input
 class RecordReader:
-    """Reads records from a binary stream for a (possibly changing) RS."""
+    """Reads records from a binary stream for a (possibly changing) RS.
+
+    The program may change RS between records, so we cannot simply iterate
+    over lines.  Instead we keep a text buffer ``buf`` and an offset
+    ``start`` where the unread part begins, reading more data in chunks as
+    needed.  RS rules: a single character separates records; ``""`` means
+    "paragraph mode" (records separated by blank lines); anything longer is
+    a regular expression (an extension in gawk and mawk).
+    """
 
     CHUNK = 65536
 
     def __init__(self, stream: IO[bytes], proc: subprocess.Popen[bytes] | None = None) -> None:
         self.stream = stream
         self.proc = proc
+        # An incremental decoder copes with a multi-byte UTF-8 character split
+        # across two chunks.
         self.decoder = codecs.getincrementaldecoder(ENCODING)(errors=ERRORS)
         self.buf = ""
         self.start = 0
@@ -72,6 +122,8 @@ class RecordReader:
         """Read more data; return False at end of input."""
         if self.eof:
             return False
+        # read1 (if the stream has it) returns what is available now instead
+        # of waiting for a full chunk: important for interactive input/pipes.
         reader = getattr(self.stream, "read1", None)
         data = reader(self.CHUNK) if reader is not None else self.stream.read(self.CHUNK)
         if not data:
@@ -84,6 +136,8 @@ class RecordReader:
         return True
 
     def _append(self, text: str) -> None:
+        # Drop the already-consumed prefix while appending, so the buffer
+        # does not grow forever.
         if self.start:
             self.buf = self.buf[self.start :] + text
             self.start = 0
@@ -91,6 +145,7 @@ class RecordReader:
             self.buf += text
 
     def read_record(self, rs: str) -> str | None:
+        """Return the next record (without its separator), or None at end."""
         if rs == "\n" or len(rs) == 1:
             return self._read_char(rs)
         if rs == "":
@@ -105,13 +160,15 @@ class RecordReader:
                 rec = self.buf[self.start : idx]
                 self.start = idx + 1
                 return rec
+            # Not found yet: read more, and resume the search where we stopped.
             scanned = len(self.buf) - self.start  # already searched, relative
             if not self._fill():
                 break
             scan = self.start + scanned
+        # End of input: a last record without a trailing separator still counts.
         if self.start < len(self.buf):
             rec = self.buf[self.start :]
-            self.buf, self.start = "", 0
+            self.buf, self.start = "", 0  # tuple assignment: sets both at once
             return rec
         return None
 
@@ -137,6 +194,8 @@ class RecordReader:
         return rec
 
     def _read_regex(self, rs: str) -> str | None:
+        # Simplest correct approach: read all input first, since a regex
+        # match could otherwise be cut short at a chunk boundary.
         while self._fill():
             pass
         if self.start >= len(self.buf):
@@ -147,7 +206,7 @@ class RecordReader:
             m = pat.search(self.buf, pos)
             if m is None:
                 break
-            if m.end() > m.start():
+            if m.end() > m.start():  # ignore empty matches
                 rec = self.buf[self.start : m.start()]
                 self.start = m.end()
                 return rec
@@ -169,17 +228,24 @@ class RecordReader:
 
 
 def _wait_status(proc: subprocess.Popen[Any]) -> int:
+    """Wait for a child process; "killed by signal N" (-N in Python) -> 256 + N."""
     rc = proc.wait()
     return rc if rc >= 0 else 256 - rc
 
 
 # ---------------------------------------------------------------- output
 class IOManager:
-    """Tracks redirected output streams and getline input streams by name."""
+    """Tracks redirected output streams and getline input streams by name.
+
+    In AWK the file name or command string *is* the handle: ``print > "f"``
+    opens f once and keeps writing to it until ``close("f")``.  So we keep
+    dictionaries from name to open stream.
+    """
 
     def __init__(self, stdout: IO[str], stdin: IO[bytes]) -> None:
         self.stdout = stdout
         self.stdin = stdin
+        # name -> (stream, process); the process is None for plain files.
         self.outputs: dict[str, tuple[IO[str], subprocess.Popen[bytes] | None]] = {}
         self.inputs: dict[str, RecordReader] = {}
         self.stdin_reader: RecordReader | None = None
@@ -190,6 +256,7 @@ class IOManager:
         return self.stdin_reader
 
     def get_output(self, kind: str, name: str) -> IO[str]:
+        """Stream for ``>``, ``>>`` or ``|`` (kind) to ``name``, opening it once."""
         entry = self.outputs.get(name)
         if entry is not None:
             return entry[0]
@@ -200,6 +267,7 @@ class IOManager:
         proc = None
         try:
             if kind == "|":
+                # Flush first so our earlier output appears before the command's.
                 self.flush_all()
                 proc = subprocess.Popen(name, shell=True, stdin=subprocess.PIPE)
                 assert proc.stdin is not None
@@ -236,6 +304,7 @@ class IOManager:
         return reader
 
     def close(self, name: str) -> int:
+        """close(name): returns the command's exit status, 0, or -1 if not open."""
         status = -1
         entry = self.outputs.pop(name, None)
         if entry is not None:
@@ -261,6 +330,8 @@ class IOManager:
 
     def close_all(self) -> None:
         # Close redirections first (mawk order), then flush stdout.
+        # list(...) takes a copy of the names, because close() removes
+        # entries and Python forbids changing a dict while looping over it.
         for name in list(self.outputs):
             self.close(name)
         for name in list(self.inputs):
@@ -270,6 +341,14 @@ class IOManager:
 
 # ---------------------------------------------------------------- interpreter
 class Interpreter:
+    """Runs one AWK program: holds all variables, arrays and record state.
+
+    ``operands`` are the command-line arguments after the program (files and
+    ``var=value`` assignments); ``assignments`` are the ``-v``/``-F``
+    settings, applied before BEGIN.  ``stdout``/``stdin`` can be replaced
+    (the tests do so).
+    """
+
     def __init__(
         self,
         program: ast.Program,
@@ -280,6 +359,7 @@ class Interpreter:
         argv0: str = "awk",
     ) -> None:
         self.program = program
+        # ``a if cond else b`` is Python's conditional expression (C's ?:).
         self.out: IO[str] = stdout if stdout is not None else sys.stdout
         self.io = IOManager(self.out, stdin if stdin is not None else sys.stdin.buffer)
         self.vars: dict[str, Value] = {
@@ -287,6 +367,8 @@ class Interpreter:
             "SUBSEP": "\x1c", "CONVFMT": "%.6g", "OFMT": "%.6g", "RSTART": 0.0,
             "RLENGTH": -1.0, "FILENAME": "",
         }
+        # Scalars and arrays live in separate dictionaries (name -> value).
+        # An AWK array is a Python dict from string key to value.
         self.arrays: dict[str, dict[str, Value]] = {}
         operands = list(operands)
         argv = {"0": argv0}
@@ -294,15 +376,22 @@ class Interpreter:
             argv[str(i)] = make_strnum(op)
         self.arrays["ARGV"] = argv  # type: ignore[assignment]
         self.vars["ARGC"] = float(len(operands) + 1)
+        # A *dict comprehension*: builds {name: value} for every environment
+        # variable, each wrapped as a strnum.
         self.arrays["ENVIRON"] = {k: make_strnum(v) for k, v in os.environ.items()}
+        # -v and -F settings (with escape processing; see command_line_assign).
         for name, value in assignments:
             self.command_line_assign(name, value)
 
-        # Record state.
-        self.record = ""
-        self.record_value: Value | None = None
-        self.fields: list[Value] | None = None
-        self.nf = 0
+        # Record state.  Fields are split *lazily*: reading a record only
+        # stores its text, and ``fields`` stays None until a program actually
+        # uses $1, NF etc.  Many programs only look at $0, so this saves work.
+        self.record = ""  # text of $0
+        self.record_value: Value | None = None  # $0 as a strnum, made on demand
+        self.fields: list[Value] | None = None  # $1..$NF once split, else None
+        self.nf = 0  # valid only once fields is not None
+        # FS in force when this record was read: POSIX says changing FS
+        # affects the *next* record, so splitting later must use this value.
         self.record_fs = " "
 
         # Main input iteration.
@@ -314,6 +403,10 @@ class Interpreter:
         self.rng = random.Random(0)
         self.exit_code = 0
 
+        # Dispatch tables: map each node class to the method that handles it.
+        # ``eval`` looks up ``type(node)`` here instead of a long chain of
+        # ``if isinstance(...)`` tests.  ``self._num`` etc. are "bound
+        # methods": calling one later passes this interpreter as ``self``.
         self._eval: dict[type, Callable[[Any], Value]] = {
             ast.Num: self._num, ast.Str: self._str, ast.Regex: self._regex_expr,
             ast.Var: self._var, ast.Index: self._index, ast.Field: self._field,
@@ -335,6 +428,12 @@ class Interpreter:
 
     # ------------------------------------------------------------ top level
     def run(self) -> int:
+        """BEGIN, the main record loop, END; returns the exit status.
+
+        ``exit`` in BEGIN or a rule skips the remaining input but still runs
+        END; ``exit`` in END stops at once.  ``finally`` makes sure output
+        files and pipes are closed however we leave.
+        """
         prog = self.program
         try:
             try:
@@ -349,6 +448,8 @@ class Interpreter:
                     self._block(block)
             except ExitEx as e:
                 self.exit_code = e.code
+        # If these escape to here, they were used where they make no sense.
+        # (``from None`` hides the internal exception from error reports.)
         except _NextEx:
             raise AwkRuntimeError("next used in BEGIN or END action") from None
         except (_BreakEx, _ContinueEx):
@@ -361,6 +462,7 @@ class Interpreter:
         return self.exit_code
 
     def _main_loop(self) -> None:
+        """The implicit AWK loop: for each record, run each matching rule."""
         rules = self.program.rules
         while True:
             rec = self.next_main_record()
@@ -374,20 +476,23 @@ class Interpreter:
                     pat = rule.pattern
                     if pat is not None and not self.test(pat):
                         continue
-                    if rule.action is None:
+                    if rule.action is None:  # a bare pattern means { print }
                         self.out.write(self.get_record_text() + self.str_of(self.vars["ORS"]))
                     else:
                         self._block(rule.action)
             except _NextEx:
-                pass
+                pass  # ``next``: abandon this record's rules, go to the next record
 
     def test(self, node: ast.Expr) -> bool:
+        """Evaluate a condition; a bare /regex/ means ``$0 ~ /regex/``."""
         if type(node) is ast.Regex:
             return compile_ere(node.source).search(self.get_record_text()) is not None
         return to_bool(self.eval(node))
 
     # ------------------------------------------------------------ main input
     def next_main_record(self) -> str | None:
+        """Next record from the main input, moving on to the next file as each
+        one ends; None when all input is exhausted."""
         while True:
             if self.reader is None and not self._open_next_input():
                 return None
@@ -400,6 +505,13 @@ class Interpreter:
             self.reader = None
 
     def _open_next_input(self) -> bool:
+        """Advance through ARGV to the next file to read.
+
+        ARGV is consulted as we go (not up front) because the program may
+        change ARGV/ARGC in BEGIN.  Empty entries are skipped, ``var=value``
+        entries are assigned at that point in the input, and if no file was
+        named at all we read standard input.
+        """
         argv = self.get_array("ARGV")
         while self.argi < to_num(self.vars["ARGC"]):
             key = str(self.argi)
@@ -408,6 +520,8 @@ class Interpreter:
             if arg == "":
                 continue
             if _ASSIGN_ARG_RE.match(arg):
+                # partition splits at the first "=" into (before, "=", after);
+                # the three results are unpacked into three names ("_" unused).
                 name, _, value = arg.partition("=")
                 self.command_line_assign(name, value)
                 continue
@@ -430,14 +544,21 @@ class Interpreter:
         return False
 
     def command_line_assign(self, name: str, value: str) -> None:
+        """Assignment from -v, -F (as FS) or a ``var=value`` operand.
+
+        The value gets string-escape processing, so ``-F '\\t'`` means a tab,
+        and is a strnum, so ``-v n=10`` compares as a number.
+        """
         self.set_var(name, make_strnum(process_escapes(value)))
 
     # ------------------------------------------------------------ conversions
+    # ``@property``: read as ``self.convfmt`` (no parentheses), computed each time.
     @property
     def convfmt(self) -> str:
         return to_str(self.vars["CONVFMT"])
 
     def str_of(self, v: Value) -> str:
+        """String value of v; numbers are converted with CONVFMT."""
         if type(v) is str:
             return v
         if type(v) is StrNum:
@@ -445,12 +566,14 @@ class Interpreter:
         return num_to_str(v, self.convfmt)  # type: ignore[arg-type]
 
     def out_str(self, v: Value) -> str:
+        """Like str_of, but ``print`` converts numbers with OFMT instead."""
         if type(v) is float:
             return num_to_str(v, to_str(self.vars["OFMT"]))
         return self.str_of(v)
 
     # ------------------------------------------------------------ records/fields
     def set_record(self, text: str) -> None:
+        """Install a new $0; fields will be split from it when first needed."""
         self.record = text
         self.record_value = None
         self.fields = None
@@ -460,12 +583,25 @@ class Interpreter:
         return self.record
 
     def _split_record(self) -> list[Value]:
+        """Split $0 into fields if not done yet (lazy splitting); return them.
+
+        Every field is a strnum: it compares as a number if it looks like one.
+        """
         if self.fields is None:
             self.fields = [make_strnum(p) for p in self.split_with_fs(self.record, self.record_fs)]
             self.nf = len(self.fields)
         return self.fields
 
     def split_with_fs(self, s: str, fs: str) -> list[str]:
+        """Split s by the FS rules (also used by split()).
+
+        * ``" "`` (default): fields are runs of non-blanks; leading and
+          trailing blanks are ignored.
+        * one other character: split on exactly that character, so empty
+          fields are possible (``a,,b`` has 3 fields with FS=",").
+        * anything longer: a regular expression.
+        In paragraph mode (RS="") a newline always separates fields too.
+        """
         paragraph = self.vars["RS"] == ""
         if fs == " ":
             return _WS_FIELDS_RE.findall(s)
@@ -476,6 +612,7 @@ class Interpreter:
             return list(s)
         if len(fs) == 1 and fs != "\\" and not paragraph:
             return s.split(fs)
+        # A single character is taken literally (re.escape), e.g. FS="|".
         source = re.escape(fs) if len(fs) == 1 else fs
         if paragraph:
             return self._split_compiled(s, compile_ere("\n|" + source if len(fs) == 1 else "\n|(" + source + ")"))
@@ -486,8 +623,10 @@ class Interpreter:
             return []
         return self._split_compiled(s, compile_ere(ere))
 
+    # ``@staticmethod``: a plain function kept in the class; it has no ``self``.
     @staticmethod
     def _split_compiled(s: str, pat: re.Pattern[str]) -> list[str]:
+        """Split s at each non-empty match of pat."""
         pieces: list[str] = []
         pos = 0
         for m in pat.finditer(s):
@@ -499,6 +638,7 @@ class Interpreter:
         return pieces
 
     def get_field(self, i: int) -> Value:
+        """$i.  $0 needs no splitting; fields past NF are uninitialised."""
         if i == 0:
             if self.record_value is None:
                 self.record_value = make_strnum(self.record)
@@ -507,10 +647,17 @@ class Interpreter:
             raise AwkRuntimeError(f"trying to access out of range field {i}")
         fields = self._split_record()
         if i <= self.nf:
-            return fields[i - 1]
+            return fields[i - 1]  # Python lists count from 0, AWK fields from 1
         return UNINIT
 
     def set_field(self, i: int, v: Value) -> None:
+        """Assign $i.
+
+        Assigning $0 re-splits (lazily).  Assigning any other field changes
+        the record: $0 is rebuilt by joining all fields with OFS, which is
+        why ``$1 = $1`` is the classic idiom to re-format a line with a new
+        OFS.  Assigning past NF adds empty fields and raises NF.
+        """
         if i == 0:
             self.set_record(self.str_of(v))
             return
@@ -524,6 +671,7 @@ class Interpreter:
         self._rebuild_record()
 
     def _rebuild_record(self) -> None:
+        """Recompute $0 from the fields, joined with the current OFS."""
         assert self.fields is not None
         ofs = self.str_of(self.vars["OFS"])
         self.record = ofs.join(self.str_of(f) for f in self.fields)
@@ -534,11 +682,12 @@ class Interpreter:
         return float(self.nf)
 
     def set_nf(self, v: Value) -> None:
+        """Assigning NF truncates or extends the fields and rebuilds $0."""
         n = int(to_num(v))
         if n < 0:
             raise AwkRuntimeError(f"NF set to negative value {n}")
         fields = self._split_record()
-        del fields[n:]
+        del fields[n:]  # remove everything from index n to the end
         while len(fields) < n:
             fields.append(UNINIT)
         self.nf = n
@@ -546,6 +695,7 @@ class Interpreter:
 
     # ------------------------------------------------------------ variables
     def get_var(self, name: str) -> Value:
+        """Scalar variable.  NF is special: it is computed from the fields."""
         if name == "NF":
             return self.get_nf()
         v = self.vars.get(name)
@@ -568,16 +718,25 @@ class Interpreter:
         if arr is None:
             if name in self.vars:
                 raise AwkRuntimeError(f"can't use scalar {name} as array")
-            arr = self.arrays[name] = {}
+            arr = self.arrays[name] = {}  # first use creates an empty array
         return arr
 
     def subscript(self, subs: list[ast.Expr]) -> str:
+        """The string key for ``arr[i]`` or ``arr[i, j]`` (joined with SUBSEP)."""
         if len(subs) == 1:
             return self.str_of(self.eval(subs[0]))
         sep = self.str_of(self.vars["SUBSEP"])
         return sep.join(self.str_of(self.eval(e)) for e in subs)
 
     # lvalue references: resolve once, then get/set (avoids double evaluation)
+    #
+    # An "lvalue" is something that can be assigned to: a variable, an array
+    # element or a field.  For ``arr[i++] += 1`` the subscript must be
+    # evaluated only once, even though we read and then write the element.
+    # ``resolve`` evaluates everything that has side effects and returns a
+    # small tuple describing the location, e.g. ("var", "x"),
+    # ("elem", <the dict>, "key") or ("field", 3); get_ref/set_ref then read
+    # or write that location.
     def resolve(self, target: ast.Expr) -> tuple[Any, ...]:
         t = type(target)
         if t is ast.Var:
@@ -596,6 +755,7 @@ class Interpreter:
             arr, key = ref[1], ref[2]
             v = arr.get(key)
             if v is None:
+                # Merely referencing arr[key] creates the element (AWK rule).
                 v = arr[key] = UNINIT
             return v
         return self.get_field(ref[1])
@@ -613,12 +773,16 @@ class Interpreter:
         self.set_ref(self.resolve(target), v)
 
     def regex_of(self, node: ast.Expr) -> re.Pattern[str]:
+        """A /literal/ is used as is; any other expression's string value is
+        treated as a regular expression ("dynamic regex")."""
         if type(node) is ast.Regex:
             return compile_ere(node.source)  # type: ignore[attr-defined]
         return compile_ere(self.str_of(self.eval(node)))
 
     # ------------------------------------------------------------ expressions
     def eval(self, node: ast.Expr) -> Value:
+        """Evaluate an expression: find the handler for this node type in the
+        dispatch table and call it with the node."""
         return self._eval[type(node)](node)
 
     def _num(self, node: ast.Num) -> Value:
@@ -628,12 +792,14 @@ class Interpreter:
         return node.value
 
     def _regex_expr(self, node: ast.Regex) -> Value:
+        # A bare /re/ used as a value means ($0 ~ /re/): 1 or 0.
         return 1.0 if compile_ere(node.source).search(self.record) else 0.0
 
     def _var(self, node: ast.Var) -> Value:
         return self.get_var(node.name)
 
     def _index(self, node: ast.Index) -> Value:
+        # Reading arr[k] creates the element if missing (as get_ref does).
         arr = self.get_array(node.name)
         key = self.subscript(node.subs)
         v = arr.get(key)
@@ -669,20 +835,26 @@ class Interpreter:
         return self.eval(node.if_true) if self.test(node.test) else self.eval(node.if_false)
 
     def _or(self, node: ast.Or) -> Value:
+        # Python's ``or``/``and`` short-circuit like AWK's || and &&: the
+        # right side is not evaluated if the left decides the answer.
         return 1.0 if self.test(node.left) or self.test(node.right) else 0.0
 
     def _and(self, node: ast.And) -> Value:
         return 1.0 if self.test(node.left) and self.test(node.right) else 0.0
 
     def _in(self, node: ast.In) -> Value:
+        # ``(k in arr)`` tests membership without creating the element.
         return 1.0 if self.subscript(node.subs) in self.get_array(node.array) else 0.0
 
     def _match(self, node: ast.Match) -> Value:
         s = self.str_of(self.eval(node.left))
         found = self.regex_of(node.regex).search(s) is not None
+        # ``!=`` between two booleans is "exclusive or": flips for ``!~``.
         return 1.0 if found != node.negate else 0.0
 
     def _compare(self, node: ast.Compare) -> Value:
+        # values.compare decides numeric vs string comparison (strnum rules)
+        # and returns negative, zero or positive, like C's strcmp.
         c = compare(self.eval(node.left), self.eval(node.right), self.convfmt)
         op = node.op
         if op == "==":
@@ -712,6 +884,7 @@ class Interpreter:
         return -v if node.op == "-" else v
 
     def _incdec(self, node: ast.IncDec) -> Value:
+        # ++x yields the new value, x++ the old one.
         ref = self.resolve(node.target)
         old = to_num(self.get_ref(ref))
         new = old + 1.0 if node.op == "++" else old - 1.0
@@ -719,9 +892,17 @@ class Interpreter:
         return new if node.prefix else old
 
     def _call(self, node: ast.Call) -> Value:
+        # Builtins receive the argument *nodes*, not values (see builtins.py).
         return BUILTINS[node.name](self, node.args)
 
     def _getline(self, node: ast.Getline) -> Value:
+        """The getline forms; returns 1 (got a record), 0 (end) or -1 (error).
+
+        * ``getline [var]``: next record of the main input; NR and FNR go up.
+        * ``getline [var] < file``: from a file; NR/FNR unchanged.
+        * ``cmd | getline [var]``: from a command's output; NR goes up.
+        Without ``var`` the record replaces $0 (and so NF).
+        """
         rs = self.str_of(self.vars["RS"])
         if node.kind == "simple":
             rec = self.next_main_record()
@@ -751,10 +932,11 @@ class Interpreter:
 
     # ------------------------------------------------------------ statements
     def execute(self, node: ast.Stmt) -> None:
+        """Run a statement via the statement dispatch table."""
         self._exec[type(node)](node)
 
     def _block(self, node: ast.Block) -> None:
-        ex = self._exec
+        ex = self._exec  # local name: a small speed-up in this hot loop
         for stmt in node.body:
             ex[type(stmt)](stmt)
 
@@ -770,6 +952,7 @@ class Interpreter:
     def _print(self, node: ast.Print) -> None:
         if node.args:
             ofs = self.str_of(self.vars["OFS"])
+            # Evaluate each argument and join the strings with OFS.
             text = ofs.join(self.out_str(self.eval(a)) for a in node.args)
         else:
             text = self.record
@@ -787,6 +970,8 @@ class Interpreter:
         elif node.orelse is not None:
             self.execute(node.orelse)
 
+    # Loops: ``break`` and ``continue`` arrive as exceptions raised somewhere
+    # inside the body (see the top of this file) and are caught here.
     def _while(self, node: ast.While) -> None:
         while self.test(node.test):
             try:
@@ -822,6 +1007,8 @@ class Interpreter:
 
     def _for_in(self, node: ast.ForIn) -> None:
         arr = self.get_array(node.array)
+        # Loop over a snapshot of the keys, since the body may add or delete
+        # elements.  (The order is unspecified in AWK; ours is insertion order.)
         for key in list(arr):
             if key not in arr:
                 continue  # deleted during the loop
@@ -843,6 +1030,9 @@ class Interpreter:
         raise _NextEx()
 
     def _exit(self, node: ast.Exit) -> None:
+        # Bare ``exit`` keeps any status set by an earlier ``exit n``
+        # (e.g. ``exit 3`` in a rule, then a plain ``exit`` in END).
+        # ``& 0xFF`` keeps the low 8 bits, as the operating system does.
         code = self.exit_code
         if node.status is not None:
             code = int(to_num(self.eval(node.status))) & 0xFF
@@ -857,6 +1047,11 @@ class Interpreter:
 
 
 def _arith(op: str, x: float, y: float) -> float:
+    """The arithmetic operators, on floating point numbers (AWK has no ints).
+
+    ``%`` uses fmod (result has the sign of x, as in C), and ``^`` gives
+    inf/nan where Python would raise an error.
+    """
     if op == "+":
         return x + y
     if op == "-":

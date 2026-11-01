@@ -1,5 +1,16 @@
 """Recursive-descent parser producing a :class:`pyawk.ast.Program`.
 
+Pipeline: cli -> lexer -> **parser** -> AST -> runtime.  The parser reads
+the token list from the lexer and builds the tree of ``ast`` nodes that the
+runtime executes.  Entry point: ``parse(source)``.
+
+"Recursive descent" means one method per grammar rule, each calling the
+methods for the rules nested inside it.  For expressions there is one
+method per precedence level: ``parse_or`` calls ``parse_and`` for its
+operands, which calls ``parse_in``, and so on down to ``parse_primary``.
+Because a lower level is always parsed first, it binds more tightly:
+``1 + 2 * 3`` groups as ``1 + (2 * 3)``.
+
 Expression precedence, lowest to highest (POSIX):
 
     assignment  = += -= *= /= %= ^=      (right)
@@ -20,8 +31,13 @@ Expression precedence, lowest to highest (POSIX):
 
 Inside ``print``/``printf`` argument lists an unparenthesised ``>`` is an
 output redirection, not a comparison (tracked with ``self.no_gt``).
+
+Python note: ``try: ... finally: ...`` runs the ``finally`` part however the
+``try`` part ends (normally or by an error), so the pattern below of saving
+``no_gt``, changing it, and restoring it in ``finally`` always restores it.
 """
 
+# Treat type hints as text, so newer syntax such as ``Token | None`` is allowed.
 from __future__ import annotations
 
 from . import ast
@@ -40,6 +56,13 @@ _STMT_END = frozenset({";", "NEWLINE", "}", "EOF"})
 
 
 class Parser:
+    """Holds the token list and a cursor (``pos``) into it.
+
+    Helper vocabulary used throughout: ``at(t)`` asks "is the current token
+    of type t?", ``accept(t)`` consumes it only if so, ``expect(t)`` consumes
+    it or raises a syntax error, ``advance()`` consumes unconditionally.
+    """
+
     def __init__(self, tokens: list[Token]) -> None:
         self.tokens = tokens
         self.pos = 0
@@ -52,6 +75,7 @@ class Parser:
             return self.tokens[i]
         return self.tokens[-1]
 
+    # ``@property`` lets ``self.tok`` be read like a field while running code.
     @property
     def tok(self) -> Token:
         return self.tokens[self.pos]
@@ -62,6 +86,7 @@ class Parser:
             self.pos += 1
         return t
 
+    # ``*types`` collects any number of arguments into a tuple: at("+", "-").
     def at(self, *types: str) -> bool:
         return self.tokens[self.pos].type in types
 
@@ -98,6 +123,7 @@ class Parser:
         return prog
 
     def parse_item(self, prog: ast.Program) -> None:
+        """One top-level item: BEGIN {...}, END {...}, pattern, or pattern {...}."""
         t = self.tok
         if t.type == "BEGIN":
             self.advance()
@@ -135,6 +161,7 @@ class Parser:
             body.append(self.parse_statement())
 
     def end_simple(self) -> None:
+        """A simple statement ends at ';' or newline, or just before '}'."""
         if self.at(";", "NEWLINE"):
             self.advance()
         elif not self.at("}", "EOF"):
@@ -179,6 +206,7 @@ class Parser:
         return self.parse_statement()
 
     def parse_paren_expr(self) -> ast.Expr:
+        """An expression inside (...) of if/while/for, where '>' is comparison."""
         saved = self.no_gt
         self.no_gt = False
         try:
@@ -195,6 +223,8 @@ class Parser:
         test = self.parse_paren_expr()
         self.expect(")")
         then = self.parse_body()
+        # Look past ';' and newlines for an ``else``; if there is none, rewind
+        # so the terminators still end the enclosing statement list.
         save = self.pos
         self.skip_terminators()
         if self.accept("else"):
@@ -206,7 +236,8 @@ class Parser:
     def parse_for(self) -> ast.Stmt:
         self.expect("for")
         self.expect("(")
-        # for (name in array)
+        # for (name in array): recognised by looking 4 tokens ahead, since a
+        # C-style loop such as ``for (i = 0; ...)`` also starts with a name.
         if (
             self.peek().type == "NAME"
             and self.peek(1).type == "in"
@@ -264,6 +295,7 @@ class Parser:
         return ast.ExprStmt(self.parse_expr())
 
     def parse_print(self) -> ast.Stmt:
+        """print/printf with optional ``> file``, ``>> file`` or ``| command``."""
         kind = self.advance().type
         args: list[ast.Expr] = []
         if not self.at(";", "NEWLINE", "}", "EOF", ">", ">>", "|"):
@@ -273,6 +305,7 @@ class Parser:
                 args = self.parse_expr_list()
             finally:
                 self.no_gt = saved
+            # ``print (a, b)`` is the same as ``print a, b``.
             if len(args) == 1 and isinstance(args[0], ast.Group):
                 args = args[0].exprs
         for a in args:
@@ -280,6 +313,8 @@ class Parser:
         redirect = dest = None
         if self.at(">", ">>", "|"):
             redirect = self.advance().type
+            # Parsed at concatenation level (like gawk): ``> "a" "b"`` writes to
+            # file "ab"; a ?: or comparison target needs parentheses.
             saved = self.no_gt
             self.no_gt = True
             try:
@@ -315,7 +350,12 @@ class Parser:
         return exprs
 
     def parse_expr(self) -> ast.Expr:
-        """Assignment level (right associative)."""
+        """Assignment level (right associative).
+
+        We parse the left side as an ordinary expression, then check that it
+        is assignable.  Recursing into ``parse_expr`` for the right side makes
+        ``a = b = 1`` group as ``a = (b = 1)``.
+        """
         left = self.parse_ternary()
         if self.tok.type in ASSIGN_OPS:
             if not isinstance(left, ast.LVALUE_TYPES):
@@ -340,6 +380,7 @@ class Parser:
         return test
 
     def parse_or(self) -> ast.Expr:
+        # Left-associative levels use a loop: a || b || c -> (a || b) || c.
         left = self.parse_and()
         while self.accept("||"):
             self.skip_newlines()
@@ -358,6 +399,7 @@ class Parser:
         while self.at("in"):
             self.advance()
             name = self.expect("NAME").value
+            # ``(i, j) in arr`` tests the multi-dimensional key i SUBSEP j.
             subs = left.exprs if isinstance(left, ast.Group) else [left]
             left = ast.In(subs, name)
         return left
@@ -372,6 +414,8 @@ class Parser:
     def parse_comparison(self) -> ast.Expr:
         left = self.parse_pipe_getline()
         t = self.tok.type
+        # ``if`` rather than ``while``: comparisons do not chain (a < b < c is
+        # an error).  Inside print arguments a bare '>' is left for redirection.
         if t in COMPARE_OPS and not (t == ">" and self.no_gt):
             self.advance()
             left = ast.Compare(t, left, self.parse_pipe_getline())
@@ -387,6 +431,12 @@ class Parser:
         return left
 
     def parse_concat(self) -> ast.Expr:
+        """Concatenation has no operator: two operands side by side.
+
+        We keep concatenating while the next token can *start* an operand.
+        ``-`` is excluded (see CONCAT_START), so ``a -1`` is subtraction and
+        ``a " " -1`` is ``a (" " - 1)``, exactly as POSIX grammar says.
+        """
         left = self.parse_additive()
         while self.tok.type in CONCAT_START:
             left = ast.Concat(left, self.parse_additive())
@@ -407,6 +457,7 @@ class Parser:
         return left
 
     def parse_unary(self) -> ast.Expr:
+        # Unary minus binds looser than ^, so -2^2 is -(2^2) = -4.
         if self.at("!", "-", "+"):
             op = self.advance().type
             return ast.Unary(op, self.parse_unary())
@@ -414,17 +465,20 @@ class Parser:
 
     def parse_power(self) -> ast.Expr:
         base = self.parse_postfix()
+        # Right associative via recursion: 2^3^2 is 2^(3^2) = 512.
         if self.accept("^"):
             return ast.Binary("^", base, self.parse_power_rhs())
         return base
 
     def parse_power_rhs(self) -> ast.Expr:
+        # The exponent may carry its own sign: 2^-1 is 0.5.
         if self.at("!", "-", "+"):
             op = self.advance().type
             return ast.Unary(op, self.parse_power_rhs())
         return self.parse_power()
 
     def parse_postfix(self) -> ast.Expr:
+        """Prefix ``++x`` / ``--x`` and postfix ``x++`` / ``x--``."""
         if self.at("++", "--"):
             op = self.advance().type
             target = self.parse_postfix()
@@ -437,6 +491,7 @@ class Parser:
         return e
 
     def parse_optional_lvalue(self) -> ast.Expr | None:
+        """The optional variable after ``getline`` (None if there is none)."""
         if self.at("NAME"):
             name = self.advance().value
             if self.accept("["):
@@ -447,6 +502,8 @@ class Parser:
         return None
 
     def parse_field_operand(self) -> ast.Expr:
+        """What follows ``$``: binds tightly, so ``$NF-1`` is ``($NF) - 1``
+        and ``$i++`` increments the field, not i."""
         if self.at("++", "--"):
             return self.parse_postfix()
         if self.at("-", "+", "!"):
@@ -455,6 +512,7 @@ class Parser:
         return self.parse_primary()
 
     def parse_primary(self) -> ast.Expr:
+        """The highest precedence level: literals, variables, $, (...), calls."""
         t = self.tok
         tt = t.type
         if tt == "NUMBER":
@@ -483,6 +541,8 @@ class Parser:
                 self.expect(")")
             finally:
                 self.no_gt = saved
+            # One expression in parentheses is just that expression (the
+            # tree's shape already records the grouping); a list is a Group.
             if len(exprs) == 1:
                 return exprs[0] if not isinstance(exprs[0], ast.Group) else exprs[0]
             return ast.Group(exprs)
@@ -511,6 +571,7 @@ class Parser:
         t = self.advance()
         name = t.value
         if not self.at("("):
+            # ``length`` without parentheses means length($0).
             if name == "length":
                 return ast.Call("length", [])
             raise self.error(f"expected '(' after {name}")
@@ -532,4 +593,5 @@ class Parser:
 
 
 def parse(source: str) -> ast.Program:
+    """Entry point: program text -> tree.  Raises AwkSyntaxError if malformed."""
     return Parser(tokenize(source)).parse_program()

@@ -5,6 +5,9 @@ usage: scripts/regen_golden.py [--awk /usr/bin/mawk] [--check] [CATEGORY/NAME ..
 
 --check  compare the system awk against the existing .out files instead of
          writing them (useful to spot reference-implementation drift).
+
+The ``.out`` files are the "golden" answers that run_golden.py and the
+pytest suite compare pyawk against, so they are made with a real awk.
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ import shlex
 import sys
 from pathlib import Path
 
+# Make awk_tests/ importable (shared harness.py); see run_golden.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "awk_tests"))
 import harness  # noqa: E402
 
@@ -24,6 +28,7 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="only compare, do not write")
     ap.add_argument("cases", nargs="*", help="limit to CATEGORY or CATEGORY/NAME")
     opts = ap.parse_args()
+    # Split "--awk 'gawk --posix'" into a command plus arguments, shell-style.
     awk = shlex.split(opts.awk)
     selected = [c for c in harness.discover() if not opts.cases or c.id in opts.cases or c.category in opts.cases]
     bad = 0

@@ -1,4 +1,10 @@
-"""Generate the golden corpus inputs (.awk/.in/.args). Run scripts/regen_golden.py afterwards for .out."""
+"""Generate the golden corpus inputs (.awk/.in/.args). Run scripts/regen_golden.py afterwards for .out.
+
+Each ``add(category, name, program, input, args)`` call below describes one
+test case; the loop at the end writes them all under awk_tests/golden/.
+The upper-case strings (EMP, PASSWD, TEXT ...) are shared sample inputs.
+Running this overwrites the existing .awk/.in/.args files.
+"""
 import os
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "awk_tests", "golden")
 
@@ -32,6 +38,7 @@ abc
 .5
 """
 
+# (category, name) -> (program, input, args); a dict keyed by a pair.
 cases = {}
 def add(cat, name, prog, inp="", args=""):
     cases[(cat, name)] = (prog, inp, args)
@@ -125,6 +132,7 @@ add("one_liners", "gsub_vowels", '{ gsub(/[aeiou]/, "#"); print }\n', EMP)
 add("one_liners", "swap_fields", '{ temp = $1; $1 = $2; $2 = temp; print }\n', EMP)
 add("one_liners", "nonempty_lines", "NF\n", TEXT)
 
+# .items() yields (key, value) pairs; both are tuples, unpacked in one go.
 for (cat, name), (prog, inp, args) in cases.items():
     d = os.path.join(ROOT, cat)
     os.makedirs(d, exist_ok=True)
