@@ -318,16 +318,69 @@ def expand_replacement(repl: str) -> list[str | None]:
     return parts
 
 
+# Caches for substitute(): the replacement as a Python re template, and
+# whether a pattern can match the empty string.  Programs use few distinct
+# patterns and replacements, so these stay small; they are emptied if a
+# program generates many.
+_TEMPLATE_CACHE: dict[str, str] = {}
+_NONEMPTY_CACHE: dict[re.Pattern[str], bool] = {}
+_SUB_CACHE_MAX = 256
+
+
+def _template(repl: str) -> str:
+    r"""The AWK replacement ``repl`` as a template for Python's ``re.sub``.
+
+    In a template, ``\g<0>`` stands for the whole match and a backslash
+    must be doubled to be literal.
+    """
+    t = _TEMPLATE_CACHE.get(repl)
+    if t is None:
+        if len(_TEMPLATE_CACHE) >= _SUB_CACHE_MAX:
+            _TEMPLATE_CACHE.clear()
+        t = _TEMPLATE_CACHE[repl] = "".join(
+            r"\g<0>" if p is None else p.replace("\\", "\\\\") for p in expand_replacement(repl)
+        )
+    return t
+
+
+def _never_matches_empty(pattern: re.Pattern[str]) -> bool:
+    """True if ``pattern`` can only match one or more characters.
+
+    Python's regex parser computes the shortest possible match length;
+    the parser is an internal module, so if it is missing or changes we
+    answer False and substitute() takes its general path.
+    """
+    answer = _NONEMPTY_CACHE.get(pattern)
+    if answer is None:
+        try:
+            from re import _parser  # type: ignore[attr-defined]
+
+            answer = _parser.parse(pattern.pattern, pattern.flags).getwidth()[0] > 0
+        except Exception:  # any failure: be safe
+            answer = False
+        if len(_NONEMPTY_CACHE) >= _SUB_CACHE_MAX:
+            _NONEMPTY_CACHE.clear()
+        _NONEMPTY_CACHE[pattern] = answer
+    return answer
+
+
 def substitute(pattern: re.Pattern[str], repl: str, s: str, global_: bool) -> tuple[str, int]:
     """sub()/gsub() core with AWK empty-match rules; returns (result, count).
 
-    We walk through ``s`` from position ``i``, copying text up to each match
-    and the rendered replacement in its place.  Patterns that can match the
-    empty string (``x*``) need care: an empty match is replaced, then one
-    character is copied so the scan always moves forward, and an empty match
-    directly after a non-empty one is skipped.  So
-    ``gsub(/x*/, "-", "abxd")`` gives ``-a-b-d-``.
+    Fast path: when the pattern cannot match the empty string, AWK's rules
+    are exactly those of Python's ``re.subn`` (leftmost matches, each
+    search starting where the previous match ended), which runs in C.
+
+    General path: we walk through ``s`` from position ``i``, copying text
+    up to each match and the rendered replacement in its place.  Patterns
+    that can match the empty string (``x*``) need care: an empty match is
+    replaced, then one character is copied so the scan always moves
+    forward, and an empty match directly after a non-empty one is skipped.
+    So ``gsub(/x*/, "-", "abxd")`` gives ``-a-b-d-``.  (Python's re.sub
+    differs here: it gives ``-a-b--d-``.)
     """
+    if _never_matches_empty(pattern):
+        return pattern.subn(_template(repl), s, 0 if global_ else 1)
     parts = expand_replacement(repl)
 
     def render(matched: str) -> str:

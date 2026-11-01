@@ -255,3 +255,24 @@ def test_split_ignores_paragraph_mode_newlines() -> None:
     prog = 'BEGIN { RS = ""; FS = ":"; s = "a:b\\nc:d"; print split(s, a), length(a[2]), split(s, b, "x") }'
     assert awk(prog) == ("3 3 1\n", 0)
     assert awk('BEGIN { RS = ""; FS = ":" } { print NF }', "a:b\nc:d\n") == ("4\n", 0)
+
+
+@pytest.mark.parametrize(
+    "pattern,repl,text,global_,expected",
+    [
+        # Patterns that never match "" take re.subn's fast path; these
+        # check that it keeps AWK's replacement rules (& and backslashes).
+        ("[aeiou]", "<&>", "banana", True, ("b<a>n<a>n<a>", 3)),
+        ("a", "<&>", "banana", False, ("b<a>nana", 1)),
+        ("n", r"\&", "banana", True, ("ba&a&a", 2)),
+        ("n", r"\\&", "banana", True, (r"ba\na\na", 2)),
+        ("n", r"\1\g<0>", "an", True, (r"a\1\g<0>", 1)),
+        ("x", "y", "banana", True, ("banana", 0)),
+        # Patterns that can match "" take the general path.
+        ("x*", "-", "abxd", True, ("-a-b-d-", 4)),
+    ],
+)
+def test_substitute_paths(
+    pattern: str, repl: str, text: str, global_: bool, expected: tuple[str, int]
+) -> None:
+    assert substitute(compile_ere(pattern), repl, text, global_) == expected
