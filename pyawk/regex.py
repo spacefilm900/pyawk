@@ -65,9 +65,14 @@ lists the decisions.  In short:
   ``\w``, ``\s``, ``\y`` are the plain letters, as in all three awks).
 * Brackets: a leading ``]`` is a member, ``-`` is literal first or last,
   backslash escapes work inside, ``[:class:]`` names are the POSIX ones,
-  and in the C locale ``[=a=]`` and ``[.a.]`` both mean "a".  An
-  unterminated bracket, an unknown class, a reversed range (``[z-a]``) or
-  a multi-character collating name is an error.
+  and ``[=a=]`` and ``[.a.]`` both mean "a".  An unterminated bracket, an
+  unknown class, a reversed range (``[z-a]``) or a multi-character
+  collating name is an error.
+* Locale (charset.py).  In the C locale a character is a byte and the
+  classes are ASCII.  In UTF-8 mode a character is a Unicode character,
+  the classes come from gawk's tables (unicode_tables.py), escapes such as
+  ``\303\251`` that spell one character are that character, and ``.``
+  and negated brackets do not match an invalid byte (as in gawk).
 
 The parser builds a small syntax tree (``Chars``, ``Cat``, ``Alt``,
 ``Repeat``, ``BOL``, ``EOL``, ``EMPTY``); the Python pattern text, the
@@ -79,10 +84,12 @@ from __future__ import annotations
 
 import re
 import weakref
+from bisect import bisect_right
 from collections.abc import Callable, Iterator
 from functools import lru_cache
 from typing import Literal
 
+from . import charset
 from .errors import AwkRuntimeError
 
 # ----------------------------------------------------------- syntax tree
@@ -94,14 +101,22 @@ Ranges = tuple[tuple[int, int], ...]
 class Chars:
     """Match one character from a set (a literal, ``.``, or a bracket)."""
 
-    __slots__ = ("ranges", "negated")
+    __slots__ = ("ranges", "negated", "_starts")
 
     def __init__(self, ranges: Ranges, negated: bool = False) -> None:
         self.ranges = ranges
         self.negated = negated
+        # Big sets (Unicode classes have hundreds of ranges) are searched
+        # by bisection on the range starts instead of one by one.
+        self._starts = tuple(lo for lo, _ in ranges) if len(ranges) > 8 else None
 
     def __contains__(self, ch: str) -> bool:
         o = ord(ch)
+        if self._starts is not None:
+            # bisect_right finds how many range starts are <= o; the range
+            # before that point is the only one that can hold o.
+            i = bisect_right(self._starts, o) - 1
+            return (i >= 0 and o <= self.ranges[i][1]) != self.negated
         for lo, hi in self.ranges:
             if lo <= o <= hi:
                 return not self.negated
@@ -168,6 +183,11 @@ def _literal(ch: str) -> Chars:
 
 
 ANY = Chars((), negated=True)  # ``.``: the complement of nothing
+# ``.`` in UTF-8 mode: any character, but not an invalid byte (charset.py
+# keeps those as the code points U+DC80..U+DCFF).  gawk's ``.`` does not
+# match an invalid byte either.
+_ESCAPED_BYTES = (charset.ESCAPED_LO, charset.ESCAPED_HI)
+ANY_UTF8 = Chars((_ESCAPED_BYTES,), negated=True)
 
 
 def _r(spec: str) -> list[tuple[int, int]]:
@@ -184,7 +204,8 @@ def _r(spec: str) -> list[tuple[int, int]]:
     return out
 
 
-# POSIX named classes for the C locale, as used inside brackets.
+# POSIX named classes for the C locale, as used inside brackets.  UTF-8
+# mode uses unicode_tables.CLASSES instead (see _Parser.bracket_element).
 _CLASSES: dict[str, list[tuple[int, int]]] = {
     "alpha": _r("a-zA-Z"),
     "digit": _r("0-9"),
@@ -299,7 +320,7 @@ class _Parser:
         if c == "$":
             return EOL
         if c == ".":
-            return ANY
+            return ANY_UTF8 if charset.UTF8 else ANY
         if c == "[":
             return self.bracket()
         if c == "\\":
@@ -332,7 +353,7 @@ class _Parser:
         """
         s, j = self.s, self.i + 1
         k = j
-        while k < len(s) and s[k].isdigit():
+        while k < len(s) and s[k] in "0123456789":
             k += 1
         if k == j:
             return None
@@ -341,7 +362,7 @@ class _Parser:
         if k < len(s) and s[k] == ",":
             m = k + 1
             k = m
-            while k < len(s) and s[k].isdigit():
+            while k < len(s) and s[k] in "0123456789":
                 k += 1
             hi = int(s[m:k]) if k > m else None
         if k >= len(s) or s[k] != "}":
@@ -362,20 +383,55 @@ class _Parser:
         if d in _ESCAPES:
             self.i = i + 2
             return _ESCAPES[d]
+        number = self.byte_escape(i)
+        if number is not None:
+            b, self.i = number
+            ch = charset.byte_char(b)
+            if charset.UTF8 and ch >= "\udcc0":
+                ch = self.utf8_sequence(b & 0xFF, ch)
+            return ch
+        self.i = i + 2
+        return d
+
+    def byte_escape(self, i: int) -> tuple[int, int] | None:
+        """(value, end) of an octal ``\\ddd`` or hex ``\\xhh`` escape at i, else None."""
+        s = self.s
+        if i + 1 >= len(s) or s[i] != "\\":
+            return None
+        d = s[i + 1]
         if d in _OCTAL:
             j = i + 1
             while j < len(s) and j < i + 4 and s[j] in _OCTAL:
                 j += 1
-            self.i = j
-            return chr(int(s[i + 1 : j], 8))
+            return int(s[i + 1 : j], 8), j
         if d == "x" and i + 2 < len(s) and s[i + 2] in _HEX:
             j = i + 2
             while j < len(s) and j < i + 4 and s[j] in _HEX:
                 j += 1
-            self.i = j
-            return chr(int(s[i + 2 : j], 16))
-        self.i = i + 2
-        return d
+            return int(s[i + 2 : j], 16), j
+        return None
+
+    def utf8_sequence(self, lead: int, lone: str) -> str:
+        """UTF-8 mode: after an escape for the lead byte ``lead`` (0xC0 or
+        more), read the escapes for its continuation bytes and return the
+        character they spell, so ``/\\303\\251+/`` means ``/é+/`` (gawk).
+        If they do not spell a valid character, return ``lone`` (the lead
+        byte on its own) and read nothing more."""
+        # The lead byte says how many continuation bytes follow.
+        need = 1 if lead < 0xE0 else 2 if lead < 0xF0 else 3
+        raw, j = [lead], self.i
+        for _ in range(need):
+            number = self.byte_escape(j)
+            if number is None or not 0x80 <= number[0] & 0xFF <= 0xBF:
+                return lone
+            raw.append(number[0] & 0xFF)
+            j = number[1]
+        try:
+            ch = bytes(raw).decode("utf-8")
+        except UnicodeDecodeError:  # e.g. an overlong form such as \300\200
+            return lone
+        self.i = j
+        return ch
 
     def bracket(self) -> Chars:
         """Parse a bracket expression; self.i is just past the '['."""
@@ -384,6 +440,8 @@ class _Parser:
         if negated:
             self.i += 1
         ranges: list[tuple[int, int]] = []
+        if negated and charset.UTF8:
+            ranges.append(_ESCAPED_BYTES)  # [^a] does not match an invalid byte either
         first = True
         while True:
             if self.i >= len(s):
@@ -422,6 +480,10 @@ class _Parser:
             if kind == ":":
                 if name not in _CLASSES:
                     raise self.error(f"unknown character class [:{name}:]")
+                if charset.UTF8:
+                    from .unicode_tables import CLASSES  # loaded on first use
+
+                    return list(CLASSES[name])
                 return _CLASSES[name]
             # [.x.] (collating symbol) and [=x=] (equivalence class): in
             # the C locale every collating element is a single character
@@ -1234,6 +1296,11 @@ def _compile(ere: str) -> tuple[Pattern, Pattern]:
     if _has_variable(tree):
         _TWINS[py] = tree
     return py, (py if _safe(tree) else LongestPattern(tree, py))
+
+
+# The same regex text means different things in the two locale modes (what
+# ``.`` or ``[[:alpha:]]`` match), so the cache is emptied when the mode changes.
+charset.on_change(_compile.cache_clear)
 
 
 def compile_ere(ere: str) -> Pattern:
