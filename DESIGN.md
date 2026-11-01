@@ -119,6 +119,18 @@ $                                   ( grouping )
   parsed at concatenation level (like gawk), so `print 1 > "a" "b"` writes
   to `ab`; a `?:` target must be parenthesised.
 * `(a, b)` is a `Group` node: legal before `in` and as a `print` list.
+  A Group as a whole pattern (`(/a/, /b/)`) or as the value of an
+  assignment is a syntax error; elsewhere (a bare statement, an `if`
+  condition, inside a larger expression) it is only caught when evaluated
+  ("parenthesised expression list used as a value"); see Known issues.
+* Range patterns `start, end`: the comma is *not* an operator. `parse_item`
+  parses one full expression as the pattern and then looks for a `,`, so
+  the comma binds more loosely than anything (`$1 == "a" || $2, /x/` means
+  `($1 == "a" || $2), /x/`; likewise `?:` and `=`), and a range can never
+  occur inside an expression or have a second comma. Newlines may follow
+  the comma but not precede it (a newline ends the rule), and `BEGIN`/`END`
+  cannot be endpoints. All three references agree on every one of these.
+  The end condition is stored in `Rule.end` (None for an ordinary rule).
 * `for (k in a)` is recognised by a 4-token lookahead.
 * Lvalues: `Var`, `Index`, `Field`. Anything else on the left of `=`,
   `++`/`--` is a syntax error.
@@ -152,6 +164,17 @@ $                                   ( grouping )
   incrementally (`surrogateescape`, so arbitrary bytes round-trip), and
   supports a single-char RS, paragraph mode and (bonus) regex RS. Plain
   `getline` shares the same reader as the main loop.
+* Range patterns: the open/closed state is run-time data, so it lives in
+  the interpreter (`range_open`, one flag per main rule, indexed by the
+  rule's position), not in the AST. `_in_range` implements the algorithm
+  all three references share: while closed, test only the start condition;
+  when it matches, open the range and test the end condition on the *same*
+  record (so one record can be a whole range); while open, test only the
+  end condition, and close after the record that matches it. The end test
+  happens before the action runs, so `next`/`exit` in the action cannot
+  keep a range open, while a record skipped by `next` in an earlier rule or
+  consumed by `getline` is never tested. The flags are never reset, so a
+  range continues across input files (POSIX; all three references agree).
 * `exit` in BEGIN or a main rule still runs END; `exit` in END stops.
   `exit` without an expression keeps an earlier exit status.
 * `IOManager` owns output files/pipes and getline sources keyed by name;
@@ -313,5 +336,9 @@ other two warn and run it).
   function, fewer for bodies with deeply nested statements); beyond that,
   a clean error. Function calls are fairly slow (a new dict and Cells per
   call; `return` is a Python exception).
+* A parenthesised list `(a, b)` not followed by `in` is a parse error only
+  as a whole pattern or an assigned value; in other places (`if ((a, b))`,
+  `x = 1 + (a, b)`) it is a run-time error when reached, whereas the
+  reference awks reject the program at parse time.
 * Performance: ~5 µs per simple record (≈30× slower than mawk). Fine for the
   test corpus; a closure-compilation pass is the planned fix.

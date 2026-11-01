@@ -20,9 +20,9 @@ assignments processed when reached, as in POSIX. Exit status is the value of
 
 | Area | Supported |
 |---|---|
-| Program | `BEGIN`, `pattern { action }`, `pattern`, `{ action }`, `END` (multiple of each), `function` definitions |
+| Program | `BEGIN`, `pattern { action }`, `pattern`, `{ action }`, `start, end [{ action }]`, `END` (multiple of each), `function` definitions |
 | Functions | `function name(params) { ... }` anywhere in the program (calls may precede the definition), `name(args)` calls (no space before `(`), `return [expr]`, extra parameters as local variables, scalars by value, arrays by reference (an unused variable passed in becomes an array if the function uses it as one), recursion (depth > 10000) |
-| Patterns | any expression, `/ere/`, `!`, `&&`, `\|\|`, `~`, `!~` |
+| Patterns | any expression, `/ere/`, `!`, `&&`, `\|\|`, `~`, `!~`; range patterns `start, end` (each rule keeps its own state, which carries over from one input file to the next; a newline may follow the comma) |
 | Statements | `if/else`, `while`, `do-while`, `for(;;)`, `for (k in a)`, `break`, `continue`, `next`, `exit [n]`, `return [expr]`, `print`, `printf`, `delete a[k]`, `delete a`, `{ }` blocks |
 | Fields | `$0`, `$n`, `$expr`, field assignment rebuilds `$0` with `OFS`, `NF` assignment truncates/extends |
 | Variables | `NR FNR NF FS OFS RS ORS FILENAME ARGC ARGV CONVFMT OFMT RSTART RLENGTH SUBSEP` (+ `ENVIRON`) |
@@ -34,8 +34,7 @@ assignments processed when reached, as in POSIX. Exit status is the value of
 | Output | `print`/`printf` with `> file`, `>> file`, `\| cmd`; `close()` |
 | Values | dual string/number values with POSIX *strnum* semantics for fields, `getline` input, `split()` elements, `ARGV`, `-v` and operand assignments |
 
-Deferred (they fail with a clear "not supported yet" error): range patterns
-`p1, p2`, `nextfile`.
+Deferred (fails with a clear "not supported yet" error): `nextfile`.
 
 Not accepted, on purpose: `func` as a synonym for `function` (an old
 onetrue-awk/gawk extension; POSIX, `gawk --posix` and mawk treat `func` as an
