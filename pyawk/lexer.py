@@ -26,9 +26,13 @@ from dataclasses import dataclass
 from .errors import AwkSyntaxError
 
 # ``frozenset`` is an unchangeable set: fast "is this word a keyword?" tests.
+# ``func`` (an old synonym for ``function`` that only onetrue-awk and plain
+# gawk still accept) is deliberately *not* here: like gawk --posix and mawk,
+# pyawk treats it as an ordinary name.  The parser gives a helpful error when
+# a program starts a definition with it.
 KEYWORDS = frozenset(
     {
-        "BEGIN", "END", "function", "func", "if", "else", "while", "for", "do",
+        "BEGIN", "END", "function", "if", "else", "while", "for", "do",
         "break", "continue", "next", "nextfile", "exit", "return", "delete",
         "in", "getline", "print", "printf",
     }

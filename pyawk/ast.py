@@ -8,7 +8,7 @@ tree* is the program's structure with the punctuation removed.  For example
 
 Every class here is pure data with no behaviour; ``runtime.py`` decides what
 each node *means*.  ``Program`` is the root: lists of BEGIN blocks, main
-rules and END blocks.
+rules and END blocks, plus a table of user-defined functions.
 
 This module is imported as ``pyawk.ast`` (always relatively inside the
 package), so it never shadows the standard library ``ast`` module.
@@ -182,6 +182,21 @@ class Call(Expr):
 
 
 @dataclass(slots=True)
+class UserCall(Expr):
+    """A call of a user-defined function: ``name(args)``.
+
+    Kept separate from ``Call`` because the runtime treats the two very
+    differently: a builtin gets the argument *nodes*, a user function gets
+    a fresh set of local variables filled from the arguments.  The function
+    itself is looked up by name when the call runs, since AWK allows a call
+    to appear before (or without!) the definition.
+    """
+
+    name: str
+    args: list[Expr]
+
+
+@dataclass(slots=True)
 class Getline(Expr):
     """All getline forms; ``target`` None means "set $0", ``source`` is the
     file name or command.  ``= None`` gives the field a default value."""
@@ -287,6 +302,13 @@ class Exit(Stmt):
 
 
 @dataclass(slots=True)
+class Return(Stmt):
+    """``return [value]`` inside a function (value None returns "uninitialized")."""
+
+    value: Optional[Expr] = None
+
+
+@dataclass(slots=True)
 class Delete(Stmt):
     array: str
     subs: Optional[list[Expr]] = None  # None deletes the whole array
@@ -303,12 +325,35 @@ class Rule(Node):
 
 
 @dataclass(slots=True)
+class Function(Node):
+    """``function name(params) { body }``.
+
+    ``params`` lists the parameter names in order.  AWK has no separate
+    syntax for local variables: by convention, extra parameters that the
+    caller does not pass serve as locals (often written after extra spaces,
+    as in ``function f(a, b,    tmp1, tmp2)``).
+    """
+
+    name: str
+    params: list[str]
+    body: Block
+
+
+@dataclass(slots=True)
 class Program(Node):
-    """The whole parsed program: the root of the tree."""
+    """The whole parsed program: the root of the tree.
+
+    ``functions`` maps each function name to its definition.  ``warnings``
+    holds messages the parser found suspicious but not fatal (such as a call
+    passing more arguments than the function has parameters); the command
+    line prints them on stderr before running the program.
+    """
 
     begin: list[Block] = field(default_factory=list)
     rules: list[Rule] = field(default_factory=list)
     end: list[Block] = field(default_factory=list)
+    functions: dict[str, Function] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
 
 
-AnyNode = Union[Expr, Stmt, Rule, Program]
+AnyNode = Union[Expr, Stmt, Rule, Function, Program]

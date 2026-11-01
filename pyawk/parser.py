@@ -32,6 +32,17 @@ Expression precedence, lowest to highest (POSIX):
 Inside ``print``/``printf`` argument lists an unparenthesised ``>`` is an
 output redirection, not a comparison (tracked with ``self.no_gt``).
 
+User-defined functions.  ``function name(params) { body }`` may appear
+anywhere a rule may, and a function may be called before its definition.
+So some checks can only be made once the whole program has been read; the
+parser collects what it needs while parsing (every name used as a variable
+or array, every call with its argument count) and checks it at the end in
+``check_functions``.  A call is written ``name(args)`` with *no* space
+before ``(``: the lexer turns such a word into a FUNC_NAME token.  Written
+with a space, ``f (x)`` lexes as the variable ``f`` followed by the
+grouping ``(x)`` (a concatenation), which is then an error if ``f`` is a
+function, because a function name may not be used as a variable.
+
 Python note: ``try: ... finally: ...`` runs the ``finally`` part however the
 ``try`` part ends (normally or by an error), so the pattern below of saving
 ``no_gt``, changing it, and restoring it in ``finally`` always restores it.
@@ -53,6 +64,15 @@ CONCAT_START = frozenset(
 )
 # Tokens that end a simple statement without being consumed.
 _STMT_END = frozenset({";", "NEWLINE", "}", "EOF"})
+# The special variables.  POSIX forbids using one as a function name or a
+# function parameter name (gawk enforces this for all of them; mawk and
+# onetrue-awk for some), so pyawk rejects them all.
+SPECIAL_VARS = frozenset(
+    {
+        "ARGC", "ARGV", "CONVFMT", "ENVIRON", "FILENAME", "FNR", "FS", "NF",
+        "NR", "OFMT", "OFS", "ORS", "RLENGTH", "RS", "RSTART", "SUBSEP",
+    }
+)
 
 
 class Parser:
@@ -67,6 +87,17 @@ class Parser:
         self.tokens = tokens
         self.pos = 0
         self.no_gt = False
+        # Context for statements that are only legal in some places:
+        # ``return`` needs an enclosing function (``in_function`` holds its
+        # name, None outside functions), ``break``/``continue`` an enclosing
+        # loop (``loop_depth`` counts the loops we are inside).
+        self.in_function: str | None = None
+        self.loop_depth = 0
+        # Collected for the end-of-program checks (see check_functions):
+        # (name, line) for every variable/array use, and (name, number of
+        # arguments, line) for every user function call.
+        self.var_uses: list[tuple[str, int]] = []
+        self.calls: list[tuple[str, int, int]] = []
 
     # ------------------------------------------------------------ utilities
     def peek(self, offset: int = 0) -> Token:
@@ -120,7 +151,37 @@ class Parser:
         while not self.at("EOF"):
             self.parse_item(prog)
             self.skip_terminators()
+        self.check_functions(prog)
         return prog
+
+    def check_functions(self, prog: ast.Program) -> None:
+        """Checks that need the whole program, because a function may be
+        used before it is defined.
+
+        * A function name may not also be used as a variable or array (this
+          also catches a call written with a space: ``f (x)``).
+        * A parameter may not have the same name as any function.
+        * Passing more arguments than a function has parameters is allowed
+          with a warning (as onetrue-awk and gawk do; mawk refuses).
+        A call of a function that is never defined is *not* an error here:
+        like onetrue-awk and gawk, it fails only if it is actually executed.
+        """
+        funcs = prog.functions
+        for name, line in self.var_uses:
+            if name in funcs:
+                raise AwkSyntaxError(
+                    f"function {name} called with a space before '(' or used as a variable or array", line
+                )
+        for fn in funcs.values():
+            for p in fn.params:
+                if p in funcs:
+                    raise AwkSyntaxError(f"function {fn.name}: parameter {p} has the name of a function", None)
+        for name, nargs, line in self.calls:
+            fn = funcs.get(name)
+            if fn is not None and nargs > len(fn.params):
+                prog.warnings.append(
+                    f"line {line}: function {name} called with {nargs} args, accepts only {len(fn.params)}"
+                )
 
     def parse_item(self, prog: ast.Program) -> None:
         """One top-level item: BEGIN {...}, END {...}, pattern, or pattern {...}."""
@@ -133,8 +194,12 @@ class Parser:
             self.advance()
             self.skip_newlines()
             prog.end.append(self.parse_block())
-        elif t.type in ("function", "func"):
-            raise AwkUnsupportedError("user-defined functions", t.line)
+        elif t.type == "function":
+            self.parse_function(prog)
+        elif t.type == "NAME" and t.value == "func" and self.peek(1).type == "FUNC_NAME":
+            # ``func name(...)`` would otherwise parse as a pattern (variable
+            # ``func`` concatenated with a call) and fail confusingly later.
+            raise AwkSyntaxError("'func' is not POSIX awk; write 'function' to define a function", t.line)
         elif t.type == "{":
             prog.rules.append(ast.Rule(None, self.parse_block()))
         else:
@@ -147,6 +212,61 @@ class Parser:
                 if not self.at("NEWLINE", ";", "EOF"):
                     raise self.error("expected newline or '{' after pattern")
                 prog.rules.append(ast.Rule(pattern, None))
+
+    def parse_function(self, prog: ast.Program) -> None:
+        """``function name(p1, p2, ...) [newlines] { body }``.
+
+        The name is a FUNC_NAME token when written ``f(`` and a NAME token
+        when written ``f (`` (both are fine in a definition).  A builtin or
+        keyword name lexes as something else and is rejected as a syntax
+        error.
+        """
+        self.expect("function")
+        t = self.tok
+        if t.type not in ("NAME", "FUNC_NAME"):
+            raise self.error("expected function name")
+        name = self.advance().value
+        if name in SPECIAL_VARS:
+            raise AwkSyntaxError(f"{name} is a special variable and cannot be a function name", t.line)
+        if name in prog.functions:
+            raise AwkSyntaxError(f"function {name} is defined twice", t.line)
+        self.expect("(")
+        params: list[str] = []
+        if not self.at(")"):
+            while True:
+                p = self.tok
+                if p.type != "NAME":
+                    raise self.error("expected parameter name")
+                self.advance()
+                if p.value == name:
+                    raise AwkSyntaxError(f"function {name}: parameter has the same name as the function", p.line)
+                if p.value in SPECIAL_VARS:
+                    raise AwkSyntaxError(f"function {name}: special variable {p.value} cannot be a parameter", p.line)
+                if p.value in params:
+                    raise AwkSyntaxError(f"function {name}: parameter {p.value} appears twice", p.line)
+                params.append(p.value)
+                if not self.accept(","):
+                    break
+                self.skip_newlines()
+        self.expect(")")
+        self.skip_newlines()
+        # Record the function *before* parsing the body, so the duplicate
+        # check above sees it; the body may call the function (recursion).
+        fn = ast.Function(name, params, ast.Block([]))
+        prog.functions[name] = fn
+        # Inside the body: ``return`` is allowed and no loop encloses us.
+        saved = (self.in_function, self.loop_depth)
+        self.in_function, self.loop_depth = name, 0
+        try:
+            fn.body = self.parse_block()
+        finally:
+            self.in_function, self.loop_depth = saved
+
+    def name_use(self, tok: Token) -> str:
+        """Note that the NAME token ``tok`` is used as a variable or array
+        (for check_functions) and return the name."""
+        self.var_uses.append((tok.value, tok.line))
+        return tok.value
 
     # ----------------------------------------------------------- statements
     def parse_block(self) -> ast.Block:
@@ -182,11 +302,15 @@ class Parser:
             self.expect("(")
             test = self.parse_paren_expr()
             self.expect(")")
-            return ast.While(test, self.parse_body())
+            return ast.While(test, self.parse_loop_body())
         if tt == "do":
             self.advance()
             self.skip_newlines()
-            body = self.parse_statement()
+            self.loop_depth += 1
+            try:
+                body = self.parse_statement()
+            finally:
+                self.loop_depth -= 1
             self.skip_terminators()
             self.expect("while")
             self.expect("(")
@@ -204,6 +328,14 @@ class Parser:
         """Body of if/while/for: optional newlines then one statement."""
         self.skip_newlines()
         return self.parse_statement()
+
+    def parse_loop_body(self) -> ast.Stmt:
+        """Body of a while/for loop, where ``break`` and ``continue`` are legal."""
+        self.loop_depth += 1
+        try:
+            return self.parse_body()
+        finally:
+            self.loop_depth -= 1
 
     def parse_paren_expr(self) -> ast.Expr:
         """An expression inside (...) of if/while/for, where '>' is comparison."""
@@ -244,11 +376,11 @@ class Parser:
             and self.peek(2).type == "NAME"
             and self.peek(3).type == ")"
         ):
-            var = ast.Var(self.advance().value)
+            var = ast.Var(self.name_use(self.advance()))
             self.advance()
-            array = self.advance().value
+            array = self.name_use(self.advance())
             self.expect(")")
-            return ast.ForIn(var, array, self.parse_body())
+            return ast.ForIn(var, array, self.parse_loop_body())
         init = None if self.at(";") else self.parse_simple_expr_stmt()
         self.expect(";")
         self.skip_newlines()
@@ -257,7 +389,7 @@ class Parser:
         self.skip_newlines()
         step = None if self.at(")") else self.parse_simple_expr_stmt()
         self.expect(")")
-        return ast.For(init, test, step, self.parse_body())
+        return ast.For(init, test, step, self.parse_loop_body())
 
     def parse_simple_expr_stmt(self) -> ast.Expr:
         return self.parse_paren_expr()
@@ -267,19 +399,30 @@ class Parser:
         tt = t.type
         if tt in ("print", "printf"):
             return self.parse_print()
-        if tt == "break":
+        if tt in ("break", "continue"):
+            # All three reference awks reject these outside a loop when
+            # parsing.  (Inside a function, a loop in the *caller* does not
+            # count: parse_function resets loop_depth.)
+            if self.loop_depth == 0:
+                raise AwkSyntaxError(f"{tt} is not inside a loop", t.line)
             self.advance()
-            return ast.Break()
-        if tt == "continue":
-            self.advance()
-            return ast.Continue()
+            return ast.Break() if tt == "break" else ast.Continue()
         if tt == "next":
+            # onetrue-awk and mawk reject ``next`` in a function body (gawk
+            # allows it); we follow the majority.
+            if self.in_function is not None:
+                raise AwkSyntaxError(f"next is not allowed inside a function ({self.in_function})", t.line)
             self.advance()
             return ast.Next()
         if tt == "nextfile":
             raise AwkUnsupportedError("nextfile", t.line)
         if tt == "return":
-            raise AwkUnsupportedError("return (user-defined functions)", t.line)
+            if self.in_function is None:
+                raise AwkSyntaxError("return outside a function", t.line)
+            self.advance()
+            if self.at(*_STMT_END):
+                return ast.Return(None)
+            return ast.Return(self.parse_expr())
         if tt == "exit":
             self.advance()
             if self.at(*_STMT_END):
@@ -287,7 +430,7 @@ class Parser:
             return ast.Exit(self.parse_expr())
         if tt == "delete":
             self.advance()
-            name = self.expect("NAME").value
+            name = self.name_use(self.expect("NAME"))
             if self.accept("["):
                 subs = self.parse_expr_list_in_brackets()
                 return ast.Delete(name, subs)
@@ -398,7 +541,7 @@ class Parser:
         left = self.parse_match()
         while self.at("in"):
             self.advance()
-            name = self.expect("NAME").value
+            name = self.name_use(self.expect("NAME"))
             # ``(i, j) in arr`` tests the multi-dimensional key i SUBSEP j.
             subs = left.exprs if isinstance(left, ast.Group) else [left]
             left = ast.In(subs, name)
@@ -493,7 +636,7 @@ class Parser:
     def parse_optional_lvalue(self) -> ast.Expr | None:
         """The optional variable after ``getline`` (None if there is none)."""
         if self.at("NAME"):
-            name = self.advance().value
+            name = self.name_use(self.advance())
             if self.accept("["):
                 return ast.Index(name, self.parse_expr_list_in_brackets())
             return ast.Var(name)
@@ -548,11 +691,15 @@ class Parser:
             return ast.Group(exprs)
         if tt == "NAME":
             self.advance()
+            self.name_use(t)
             if self.accept("["):
                 return ast.Index(t.value, self.parse_expr_list_in_brackets())
             return ast.Var(t.value)
         if tt == "FUNC_NAME":
-            raise AwkUnsupportedError(f"user-defined function call {t.value}()", t.line)
+            self.advance()
+            args = self.parse_call_args()
+            self.calls.append((t.value, len(args), t.line))
+            return ast.UserCall(t.value, args)
         if tt == "BUILTIN":
             return self.parse_builtin()
         if tt == "getline":
@@ -575,7 +722,15 @@ class Parser:
             if name == "length":
                 return ast.Call("length", [])
             raise self.error(f"expected '(' after {name}")
-        self.advance()
+        return ast.Call(name, self.parse_call_args())
+
+    def parse_call_args(self) -> list[ast.Expr]:
+        """``( [expr, expr, ...] )`` after a builtin or user function name.
+
+        Inside the parentheses ``>`` is a comparison again, even within a
+        print statement, and newlines may follow the commas.
+        """
+        self.expect("(")
         saved = self.no_gt
         self.no_gt = False
         try:
@@ -589,7 +744,7 @@ class Parser:
             self.no_gt = saved
         for a in args:
             self.check_no_group(a)
-        return ast.Call(name, args)
+        return args
 
 
 def parse(source: str) -> ast.Program:

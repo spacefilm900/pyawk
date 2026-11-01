@@ -116,11 +116,102 @@ def test_control_statements_parse() -> None:
 
 def test_deferred_features_error_clearly() -> None:
     with pytest.raises(AwkUnsupportedError):
-        parse("function f(a) { return a }")
-    with pytest.raises(AwkUnsupportedError):
         parse("/a/, /b/")
-    with pytest.raises(AwkUnsupportedError):
-        parse("{ f(1) }")
+
+
+# ------------------------------------------------------- user-defined functions
+def test_function_definition_and_call() -> None:
+    prog = parse("function add(a, b) { return a + b }\nBEGIN { x = add(1, 2) }")
+    fn = prog.functions["add"]
+    assert fn.name == "add" and fn.params == ["a", "b"]
+    assert fn.body.body == [ast.Return(ast.Binary("+", ast.Var("a"), ast.Var("b")))]
+    call = prog.begin[0].body[0].expr.value
+    assert call == ast.UserCall("add", [ast.Num(1.0), ast.Num(2.0)])
+
+
+def test_function_definition_layouts() -> None:
+    # A space before '(' is fine in a *definition*, and so are a newline
+    # after a comma in the parameter list and newlines before the body.
+    prog = parse("function f (a,\n b)\n\n{\n return\n}\n;BEGIN { f( ) }")
+    assert prog.functions["f"].params == ["a", "b"]
+    assert prog.functions["f"].body.body == [ast.Return(None)]
+    assert prog.begin[0].body[0].expr == ast.UserCall("f", [])
+
+
+def test_function_may_be_used_before_its_definition() -> None:
+    prog = parse("BEGIN { print g(1) }\nfunction g(x) { return x }")
+    assert list(prog.functions) == ["g"]
+
+
+def test_call_to_undefined_function_parses() -> None:
+    # Like onetrue-awk and gawk, an undefined function is an error only if
+    # the call is actually executed (see test_runtime).
+    assert parse("BEGIN { if (0) nosuch(1) }").functions == {}
+
+
+def test_func_is_not_a_keyword() -> None:
+    # gawk --posix and mawk treat ``func`` as an ordinary name.
+    prog = parse("BEGIN { func = 1; print func }")
+    assert prog.begin[0].body[0].expr == ast.Assign("=", ast.Var("func"), ast.Num(1.0))
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "function f(a) { } function f(b) { }",  # defined twice
+        "function f(f) { }",  # parameter named like its own function
+        "function g() { } function f(g) { }",  # ... or like another function
+        "function f(a, a) { }",  # duplicate parameter
+        "function f(length) { }",  # builtin name as parameter
+        "function f(NR) { }",  # special variable as parameter
+        "function f(FS) { }",
+        "function length(x) { }",  # builtin name as function name
+        "function print(x) { }",  # keyword as function name
+        "function NR(x) { }",  # special variable as function name
+        "function f() { return 1 } BEGIN { f = 2 }",  # function used as variable
+        "function f() { return 1 } BEGIN { print f }",
+        "BEGIN { f[1] = 1 } function f() { }",  # ... as an array
+        "BEGIN { x = f (1) } function f(a) { }",  # space before '(' in a call
+        "BEGIN { delete f } function f() { }",
+        "BEGIN { if (1 in f) print } function f() { }",
+        "BEGIN { getline f } function f() { }",
+        "BEGIN { for (f in a) ; } function f() { }",
+        "BEGIN { for (k in f) ; } function f() { }",
+        "BEGIN { return 1 }",  # return outside a function
+        "{ return }",
+        "function f() { next }",  # next inside a function
+        "function f() { break }",  # break outside a loop
+        "BEGIN { continue }",
+        "function f(a { }",
+        "function f(a,) { }",
+        "function (a) { }",
+        "function f(a)",
+    ],
+)
+def test_function_syntax_errors(bad: str) -> None:
+    with pytest.raises(AwkSyntaxError):
+        parse(bad)
+
+
+def test_func_keyword_error_mentions_function() -> None:
+    with pytest.raises(AwkSyntaxError, match="'function'"):
+        parse("func f(x) { return x }")
+
+
+def test_function_name_as_variable_message() -> None:
+    with pytest.raises(AwkSyntaxError, match="function f .*variable"):
+        parse("function f(a) { } BEGIN { print f (1) }")
+
+
+def test_too_many_arguments_is_a_warning() -> None:
+    prog = parse("function g(a) { return a } BEGIN { g(1, 2); g(3) }")
+    assert len(prog.warnings) == 1
+    assert "g" in prog.warnings[0] and "2" in prog.warnings[0]
+
+
+def test_loops_inside_functions_allow_break() -> None:
+    prog = parse("function f() { while (1) { break }; for (;;) continue }")
+    assert len(prog.functions["f"].body.body) == 2
 
 
 def test_syntax_errors() -> None:
