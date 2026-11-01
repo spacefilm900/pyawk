@@ -38,6 +38,10 @@ REFERENCES = {
     "gawk": ["/workspace/refs/local/bin/gawk", "--posix"],
 }
 
+# The reference whose answer the DECISIONS cases follow (close() keeps a
+# command's exit status, as mawk does).
+DECISION_REFERENCE = "mawk"
+
 
 def vote(cases: list[harness.Case]) -> int:
     """Print how the references compare on each case; return the problem count.
@@ -63,7 +67,17 @@ def vote(cases: list[harness.Case]) -> int:
             problems += 1
             print(f"SPLIT {case.id}: no two references agree")
         elif case.id in decisions:
-            print(f"DECIDED {case.id}: {decisions[case.id]}")
+            # A decided case follows mawk's answer (see DECISIONS).  Only
+            # call it a success if the recorded .out really holds that
+            # answer; a stale or missing .out is a problem like any other.
+            if expected is None:
+                problems += 1
+                print(f"DECIDED-MISSING {case.id}: no .out file")
+            elif expected != outputs[DECISION_REFERENCE]:
+                problems += 1
+                print(f"DECIDED-WRONG {case.id}: .out is not the {DECISION_REFERENCE} answer")
+            else:
+                print(f"DECIDED {case.id}: {decisions[case.id]}")
         elif expected != majority:
             problems += 1
             print(f"WRONG {case.id}: .out is not the majority answer ({', '.join(groups[majority])})")
