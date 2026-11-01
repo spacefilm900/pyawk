@@ -76,3 +76,16 @@ def test_repeat_operator_after_caret_repeats_the_anchor(line: str, expected: str
     # reindops: ``/^+[2-9]/`` is ``(^)+[2-9]``, not a literal "+".
     prog = "{ print ($0 ~ /^+[2-9]/), ($0 ~ /^*a/), ($0 ~ /^?a/) }"
     assert awk(prog, line + "\n") == expected + "\n"
+
+
+# ----------------------------------------------------------------- getline
+def test_getline_target_is_evaluated_even_at_end_of_file(tmp_path) -> None:
+    # getline5: gawk and mawk evaluate ``a[++c]`` before reading, so the
+    # failing (end-of-file) call still bumps c and creates the element.
+    f = tmp_path / "f"
+    f.write_text("1\n")
+    prog = (
+        'BEGIN { while ((getline a[++c] < "%s") > 0) {}; print c, length(a);'
+        ' getline e[++q] < "%s/missing"; print q, length(e) }' % (f, tmp_path)
+    )
+    assert awk(prog) == "2 2\n1 1\n"

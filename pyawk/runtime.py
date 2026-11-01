@@ -1207,6 +1207,9 @@ class Interpreter:
         Without ``var`` the record replaces $0 (and so NF).
         """
         rs = self.str_of(self.vars["RS"])
+        ref = None
+        if node.kind == "simple" and node.target is not None:
+            ref = self._getline_target(node.target)
         if node.kind == "simple":
             rec = self.next_main_record()
             if rec is None:
@@ -1216,6 +1219,8 @@ class Interpreter:
         else:
             assert node.source is not None
             name = self.str_of(self.eval(node.source))
+            if node.target is not None:
+                ref = self._getline_target(node.target)
             if node.kind == "file":
                 reader = self.io.get_input_file(name)
                 if reader is None:
@@ -1227,11 +1232,24 @@ class Interpreter:
                 return 0.0
             if node.kind == "cmd":
                 self.vars["NR"] = to_num(self.vars["NR"]) + 1.0
-        if node.target is None:
+        if ref is None:
             self.set_record(rec)
         else:
-            self.assign(node.target, make_strnum(rec))
+            self.set_ref(ref, make_strnum(rec))
         return 1.0
+
+    def _getline_target(self, target: ast.Expr) -> tuple[Any, ...]:
+        """Resolve getline's variable *before* reading, as gawk and mawk do.
+
+        So the subscript in ``getline a[++c] < f`` is evaluated (and the
+        element created) on every call, including the one that hits end of
+        file or fails to open the file: the gawk test getline5 expects c = 2
+        after reading a one-line file.  (onetrue-awk skips it, giving 1.)
+        """
+        ref = self.resolve(target)
+        if ref[0] == "elem":
+            self.get_ref(ref)  # referencing an element creates it
+        return ref
 
     # ------------------------------------------------------------ statements
     def execute(self, node: ast.Stmt) -> None:
