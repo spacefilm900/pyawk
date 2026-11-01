@@ -129,35 +129,49 @@ def format_printf(fmt: str, args: list[Value], convfmt: str = "%.6g") -> str:
 
 # ------------------------------------------------------------- string ops
 def substr(s: str, m: float, n: float | None = None) -> str:
-    """POSIX substr with rounding of fractional positions (gawk semantics).
+    """substr(s, m[, n]): up to n characters of s starting at position m.
 
-    AWK counts characters from 1, Python from 0.  We compute the 1-based
-    half-open range [start, end), clip it to the string, and then slice
-    with ``s[start-1 : end-1]`` (Python slices are also half-open).
-    ``m != m`` tests for NaN.
+    Behaviour of onetrue-awk and gawk (mawk differs only for a start
+    below 1 combined with a length):
+
+    * both m and n are truncated toward zero (2.7 -> 2, -0.5 -> 0);
+    * a start below 1 is treated as 1 *without* shortening the length,
+      so ``substr("hello", 0, 2)`` is "he" (POSIX would give "h");
+    * a negative length gives "", a length past the end stops at the end.
+
+    Infinite, NaN and huge values follow gawk (the other two overflow a C
+    int there): a NaN start counts as 1, a NaN length gives "".
+
+    AWK counts characters from 1, Python from 0, so the result is the
+    Python slice ``s[start-1 : start-1+length]``.
     """
-    if m != m:
-        return ""
-    start = _round(m)
-    if n is None:
-        end = math.inf
-    else:
-        if n != n:
-            return ""
-        end = start + _round(n) if n != math.inf else math.inf
-    if start < 1:
+    size = len(s)
+    # Clamp *before* converting to int: int() of inf or NaN would fail,
+    # and clamping keeps huge values such as 1e30 harmless.
+    if m != m:  # NaN is the only value not equal to itself
         start = 1
-    if end > len(s) + 1:
-        end = len(s) + 1
-    if end <= start:
+    else:
+        start = _trunc_clamp(m, 1, size + 1)
+    if n is None:
+        length = size + 1 - start
+    elif n != n:
         return ""
-    return s[int(start) - 1 : int(end) - 1]
+    else:
+        length = _trunc_clamp(n, 0, size + 1 - start)
+    return s[start - 1 : start - 1 + length]
 
 
-def _round(x: float) -> float:
-    if x in (math.inf, -math.inf):
-        return x
-    return float(round(x))  # round-half-even, like C's rint()
+def _trunc_clamp(x: float, low: int, high: int) -> int:
+    """Truncate x toward zero, then force it into [low, high].
+
+    Clamping happens first for infinities, since ``math.trunc(inf)``
+    raises an error; ±inf simply become ``high`` or ``low``.
+    """
+    if x <= low:
+        return low
+    if x >= high:
+        return high
+    return math.trunc(x)
 
 
 def index(s: str, t: str) -> int:

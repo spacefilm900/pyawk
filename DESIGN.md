@@ -295,8 +295,7 @@ differential runs:
 
 | Behaviour | POSIX / pyawk | mawk |
 |---|---|---|
-| `substr(s, 0, 2)`, negative start | chars at positions 1..1 (`"h"`) | counts from 1 (`"he"`) |
-| `substr(s, 2.7)` non-integer start | rounds (gawk) → `"llo"` | truncates → `"ello"` |
+| `substr(s, -1, 3)`, negative start with a length | start clamped to 1, length kept: `"hel"` (onetrue, gawk) | `"hell"` |
 | `length("héllo")` | characters: 5 | bytes: 6 |
 | `"a\/b"` in a string | `a/b` (gawk, BWK) | keeps backslash `a\/b` |
 | `"\q"`, `"\&"`, `"a\.b"`: undefined escapes | backslash dropped (gawk, BWK) | backslash kept (see Lexer) |
@@ -317,16 +316,35 @@ onetrue-awk (checked against `gawk --posix`) and the case is listed in
 `awk_tests/golden/OVERRIDES` (`CATEGORY/NAME  reason`). `regen_golden.py`
 never rewrites a listed `.out`, and `--check` reports it as `KEEP ...
 differs (expected)` rather than counting it (or suggests removing the entry
-if mawk ever agrees). Currently: `builtins/undefined_escapes`, and
-`functions/extra_args` (mawk rejects a call with too many arguments; the
+if mawk ever agrees). Currently: `builtins/undefined_escapes`,
+`builtins/substr_clamp` (see substr below) and `functions/extra_args` (mawk rejects a call with too many arguments; the
 other two warn and run it).
 
 **Imported gawk suite.** `awk_tests/gawk/` trusts gawk's `.ok` files only
-where two of the three references agree with them (see README). Open
-question it raised: in `gawk/substr`, onetrue-awk, `gawk --posix` *and*
-mawk all treat a start below 1 as 1 without shortening the length
-(`substr("abcdef", 0, 2)` is `"ab"`), unlike the POSIX reading pyawk follows
-(table above), so that case is in `KNOWN_FAILURES` until we decide.
+where two of the three references agree with them (see README). It
+settled one open question: `substr` with a start below 1 (next section).
+
+## substr
+
+Decided by the user: follow the reference awks. onetrue-awk and
+`gawk --posix` agree on every case tried (a grid of starts and lengths from
+-3 to 7, fractions included); mawk differs only when a negative start is
+combined with a length. pyawk follows the two:
+
+* start and length are **truncated** toward zero (`substr("hello", 2.7)` is
+  `"ello"`, `substr("hello", 1, 2.5)` is `"he"`);
+* a start below 1 becomes 1 **without shortening the length**
+  (`substr("hello", 0, 2)` is `"he"` in all three; `substr("hello", -1, 3)`
+  is `"hel"`, mawk `"hell"`). A literal reading of POSIX (characters at
+  positions m..m+n-1, which pyawk used before) would give `"h"` for both;
+  no reference does that;
+* a negative length gives `""`; a length past the end stops at the end.
+
+For huge, infinite or NaN arguments onetrue-awk and mawk overflow a C
+`int` (`substr("hello", 1, 1e30)` is `""` in both), so pyawk follows gawk:
+`substr(s, 1, 1e30)` is all of `s`, a NaN start counts as 1, a NaN length
+gives `""`. Tests: `tests/test_runtime.py`, golden `builtins/substr_clamp`
+(an OVERRIDES case) and gawk `substr`.
 
 ## Known issues / limitations
 

@@ -5,3 +5,4 @@
 # Format: CATEGORY/NAME  reason
 builtins/undefined_escapes  mawk keeps the backslash of undefined escapes like "\&", "\q", "\." (onetrue-awk and gawk drop it)
 functions/extra_args  mawk rejects a call with more arguments than the function has parameters (fatal); onetrue-awk and gawk warn on stderr and run it
+builtins/substr_clamp  mawk shortens the length when the start is below 1 (substr("hello", -1, 3) is "hell"); onetrue-awk and gawk clamp the start to 1 ("hel")

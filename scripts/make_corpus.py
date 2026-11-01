@@ -117,6 +117,15 @@ add("builtins", "string_to_number", 'BEGIN { print "3x" + 1, " 12 " * 2, "abc" +
 # mawk keeps the backslash of an undefined escape; this case's .out is
 # hand-corrected to the onetrue-awk/gawk answer (listed in golden/OVERRIDES).
 add("builtins", "undefined_escapes", '{ s = $0; sub(/o/, "[\\&]", s); t = $0; gsub(/o/, "\\\\&", t); u = $0; sub(/o/, v, u)\n  print s, t, u, "\\q", length("\\q"), ($0 ~ "f\\.o"), ($0 ~ "f\\\\.o") }\n', "foo\nf.o\n", "-v 'v=<\\&>'")
+# substr with a start below 1 or fractional arguments: onetrue-awk and gawk
+# clamp the start to 1 and truncate; mawk shortens the length for a negative
+# start, so this .out is hand-corrected (listed in golden/OVERRIDES).
+add("builtins", "substr_clamp", '''{
+	print "[" substr($0, 0) "]", "[" substr($0, 0, 2) "]", "[" substr($0, -1, 3) "]", "[" substr($0, -3, 1) "]"
+	print "[" substr($0, 2.7) "]", "[" substr($0, 1, 2.5) "]", "[" substr($0, 1.5, 1.5) "]", "[" substr($0, -0.5, 2) "]"
+	print "[" substr($0, 2, -1) "]", "[" substr($0, 4, 10) "]", "[" substr($0, 7) "]", "[" substr($0, "x") "]"
+}
+''', "hello\nab\n")
 
 # ---------------- functions (user-defined)
 add("functions", "call_return", r'''# A function may be used before its definition; a newline may come

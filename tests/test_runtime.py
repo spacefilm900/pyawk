@@ -68,10 +68,43 @@ def test_printf_formats() -> None:
 def test_substr_edges() -> None:
     assert substr("hello", 2, 3) == "ell"
     assert substr("hello", 0) == "hello"
-    assert substr("hello", 0, 2) == "h"  # POSIX/gawk (mawk returns "he")
-    assert substr("hello", -1, 3) == "h"  # POSIX/gawk (mawk returns "hell")
-    assert substr("hello", 1.5, 2) == "el"  # rounding, like gawk
     assert substr("hello", 10) == ""
+    assert substr("hello", 5, 10) == "o"
+    assert substr("hello", 2, -1) == ""
+
+
+def test_substr_start_below_one() -> None:
+    # onetrue-awk and gawk (also --posix) clamp a start below 1 to 1 and
+    # keep the full length; mawk (the outlier) shortens it differently.
+    assert substr("hello", 0, 2) == "he"
+    assert substr("hello", -1, 3) == "hel"
+    assert substr("hello", -3, 1) == "h"
+    assert substr("hello", -1) == "hello"
+
+
+def test_substr_truncates_fractions() -> None:
+    # All three references truncate both arguments toward zero.
+    assert substr("hello", 1.5) == "hello"
+    assert substr("hello", 2.7) == "ello"
+    assert substr("hello", 3.5) == "llo"
+    assert substr("hello", 1, 2.5) == "he"
+    assert substr("hello", 1, 1.6) == "h"
+    assert substr("hello", 1.5, 1.5) == "h"
+    assert substr("hello", 0.5, 2) == "he"
+    assert substr("hello", -0.5, 2) == "he"
+    assert substr("hello", 1, 0.9) == ""
+
+
+def test_substr_huge_and_special_values() -> None:
+    # onetrue-awk and mawk overflow a C int here; we follow gawk.
+    inf, nan = float("inf"), float("nan")
+    assert substr("hello", 1, 1e30) == "hello"
+    assert substr("hello", -1e30, 1e30) == "hello"
+    assert substr("hello", 1e30) == ""
+    assert substr("hello", 1, inf) == "hello"
+    assert substr("hello", inf) == ""
+    assert substr("hello", 2, nan) == ""
+    assert substr("hello", nan) == "hello"
 
 
 def test_gsub_empty_matches() -> None:
