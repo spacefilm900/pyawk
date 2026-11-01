@@ -152,13 +152,14 @@ CUSTOM_SKIP: dict[str, str] = {
     "rsnulbig2": "custom rule: pipeline of three awk commands",
 }
 
-# Cases the references decide by majority, but where we deliberately keep
-# a different documented behaviour; the decision is left to the maintainer.
-# They are skipped (not run) with this reason, so the suite stays honest.
-REVIEWED_SKIP: dict[str, str] = {
+# Cases where the references' majority goes against a decision the user
+# made (recorded in awk_tests/golden/DECISIONS and DESIGN.md).  These run
+# with gawk's own .ok as the expected output, but only if mawk agrees with
+# it, so the expected answer is still produced by two real awks.
+DECIDED: dict[str, str] = {
     "close_status": (
-        "reference disagreement: close() of a command returns 0 in onetrue-awk and "
-        "gawk --posix but the exit status in mawk and gawk (pyawk: exit status, see DESIGN.md)"
+        "user decision: close() of a command returns its exit status (mawk and gawk; "
+        "onetrue-awk and gawk --posix return 0)"
     ),
 }
 
@@ -237,7 +238,6 @@ SKIP_PATTERNS: list[tuple[str, str]] = [
     (r"@\w+\s*\(", "gawk extension: indirect function call"),
     (r"\|&", "gawk extension: coprocess |&"),
     (r"/inet[46]?/", "network: /inet special file"),
-    (r"\bENVIRON\b", "environment-dependent: ENVIRON"),
     (r"\b(rand|srand)\s*\(", "nondeterministic: rand/srand sequence is implementation-specific"),
     (r"\bsleep\b", "timing-dependent: sleep"),
 ]
@@ -245,7 +245,7 @@ SKIP_PATTERNS: list[tuple[str, str]] = [
 
 def static_skip_reason(source: str) -> str | None:
     """A reason to skip this program based on its text alone, or None."""
-    # Ask pyawk's own parser about deferred features (currently nextfile).
+    # Ask pyawk's own parser about deferred features (none at present).
     # Other syntax errors are not skips: if the references accept the
     # program, pyawk rejecting it is a bug we want to see.
     try:
@@ -438,8 +438,12 @@ def main() -> int:
         ok_file = opts.src / f"{name}.ok"
         ok = ok_file.read_text(encoding="utf-8", errors="surrogateescape") if ok_file.exists() else ""
         status, reason, note, expected = classify(source, ok, refs, exact, exact_sep, name == "exitval1")
-        if name in REVIEWED_SKIP and status != "skip":
-            status, reason = "skip", REVIEWED_SKIP[name]
+        if name in DECIDED:
+            # gawk in its default mode reproduces the .ok; mawk must agree.
+            if refs["mawk"].stdout != exact_sep.stdout:
+                raise SystemExit(f"{name}: mawk no longer matches gawk's .ok; review DECIDED")
+            status, reason, expected = "run", "", exact_sep.stdout
+            note = f"expected: gawk .ok (agree: mawk); {DECIDED[name]}"
         if spec.note:
             note = spec.note + "; " + note
         (DEST / f"{name}.out").write_text(expected or "", encoding="utf-8", errors="surrogateescape")

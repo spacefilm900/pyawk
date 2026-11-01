@@ -105,13 +105,13 @@ def static_skip_reason(source: str) -> str | None:
     Order matters only for which reason is reported when several apply.
     """
     # 1. Ask pyawk's own parser: it raises AwkUnsupportedError for the
-    #    features still deferred (currently only nextfile).
+    #    features still deferred (none at present; nextfile was the last).
     #    Any other syntax error is *not* a skip: if the references accept the
     #    program, pyawk failing to parse it is a bug we want to see.
     try:
         parse(source)
     except AwkUnsupportedError as e:
-        # str(e) looks like "syntax error at source line 1: nextfile
+        # str(e) looks like "syntax error at source line 1: FEATURE
         # is not supported yet (...)"; keep just the feature name so the
         # reasons group nicely in the report.
         m = re.search(r": (.+?) is not supported yet", str(e))
@@ -119,8 +119,6 @@ def static_skip_reason(source: str) -> str | None:
     except AwkSyntaxError:
         pass
     # 2. Features the task lists as out of scope even though pyawk accepts them.
-    if re.search(r"\bENVIRON\b", source):
-        return "environment-dependent: ENVIRON"
     # A string literal of two or more characters assigned to RS: POSIX leaves
     # multi-character RS unspecified (gawk/mawk treat it as a regex).
     for m in re.finditer(r'\bRS\s*=\s*"((?:[^"\\]|\\.)*)"', source):
