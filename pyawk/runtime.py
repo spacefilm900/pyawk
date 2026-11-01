@@ -728,11 +728,12 @@ class Interpreter:
         Every field is a strnum: it compares as a number if it looks like one.
         """
         if self.fields is None:
-            self.fields = [make_strnum(p) for p in self.split_with_fs(self.record, self.record_fs)]
+            pieces = self.split_with_fs(self.record, self.record_fs, paragraph=self.vars["RS"] == "")
+            self.fields = [make_strnum(p) for p in pieces]
             self.nf = len(self.fields)
         return self.fields
 
-    def split_with_fs(self, s: str, fs: str) -> list[str]:
+    def split_with_fs(self, s: str, fs: str, paragraph: bool = False) -> list[str]:
         """Split s by the FS rules (also used by split()).
 
         * ``" "`` (default): fields are runs of non-blanks; leading and
@@ -740,9 +741,10 @@ class Interpreter:
         * one other character: split on exactly that character, so empty
           fields are possible (``a,,b`` has 3 fields with FS=",").
         * anything longer: a regular expression.
-        In paragraph mode (RS="") a newline always separates fields too.
+        ``paragraph`` is True when splitting a record in paragraph mode
+        (RS=""): then a newline always separates fields too.  split() never
+        passes it, since all three reference awks split strings by FS alone.
         """
-        paragraph = self.vars["RS"] == ""
         if fs == " ":
             return _WS_FIELDS_RE.findall(s)
         if s == "":

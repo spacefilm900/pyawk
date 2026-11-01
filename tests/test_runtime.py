@@ -244,3 +244,12 @@ def test_string_assigned_to_record_stays_a_string() -> None:
     assert awk('BEGIN { $0 = "00E0"; print ($0 && 1); $1 = "0"; print !$0, !$1 }') == ("1\n0 0\n", 0)
     # Input records and $0 = $1 (a strnum) stay numeric strings.
     assert awk('{ print !$0; $0 = $1; print !$0 }', "0\n") == ("1\n1\n", 0)
+
+
+def test_split_ignores_paragraph_mode_newlines() -> None:
+    # With RS = "", a newline separates *record* fields whatever FS is, but
+    # split() uses only FS (or its own separator).  All three references;
+    # gawk test rstest1.
+    prog = 'BEGIN { RS = ""; FS = ":"; s = "a:b\\nc:d"; print split(s, a), length(a[2]), split(s, b, "x") }'
+    assert awk(prog) == ("3 3 1\n", 0)
+    assert awk('BEGIN { RS = ""; FS = ":" } { print NF }', "a:b\nc:d\n") == ("4\n", 0)

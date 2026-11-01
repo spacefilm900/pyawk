@@ -164,7 +164,8 @@ $                                   ( grouping )
 * Records: fields are split lazily, using the FS in effect when the record
   was read (POSIX; changing FS affects the *next* record). Assigning a field
   rebuilds `$0` with `OFS`; assigning `NF` truncates/extends and rebuilds.
-  In paragraph mode (`RS=""`) newline is always a field separator too.
+  In paragraph mode (`RS=""`) newline is always a field separator too, when
+  splitting records only: `split()` uses FS alone (all three references).
 * Input: `RecordReader` reads bytes with `read1` and decodes UTF-8
   incrementally (`surrogateescape`, so arbitrary bytes round-trip), and
   supports a single-char RS, paragraph mode and (bonus) regex RS. Plain
