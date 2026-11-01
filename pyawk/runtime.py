@@ -451,25 +451,37 @@ class IOManager:
 
         A special name the program never used returns -1 like any other
         name that is not open (gawk).
+
+        If the last output cannot be written (a full disk, say), closing a
+        file, "/dev/stdout" or "/dev/stderr" returns -1: POSIX says close
+        returns non-zero when it fails.  (The three references stop the
+        program with a write error instead; see DESIGN.md.)  A broken pipe
+        on standard output is passed on, as for fflush.
         """
         if name in self.specials_used:
             self.specials_used.discard(name)
             if name == "/dev/stdout":
-                self.stdout.flush()
-            elif name == "/dev/stderr":
-                sys.stderr.flush()
-            else:
-                self.use_up_stdin()
+                return self._flush_one(self.stdout)
+            if name == "/dev/stderr":
+                return self._flush_one(sys.stderr)
+            self.use_up_stdin()
             return 0
         status = -1
         entry = self.outputs.pop(name, None)
         if entry is not None:
             stream, proc = entry
+            failed = False
             try:
-                stream.close()
+                stream.close()  # Python closes the file even if this raises
             except OSError:
-                pass
-            status = _wait_status(proc) if proc is not None else 0
+                failed = True
+            if proc is not None:
+                # A command that exited without reading all its input makes
+                # the close fail (a broken pipe); its exit status is still
+                # the answer (see "close()" in DESIGN.md).
+                status = _wait_status(proc)
+            else:
+                status = -1 if failed else 0
         reader = self.inputs.pop(name, None)
         if reader is not None:
             status = reader.close()

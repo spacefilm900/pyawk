@@ -278,6 +278,62 @@ def test_close_dev_stderr_after_printing_to_it_returns_zero(capsys: pytest.Captu
     assert out == "0\n"  # all three references
 
 
+# A close() whose last write fails (a full disk, say) must not report
+# success (CodeRabbit, PR #1).  POSIX: close returns zero if the close was
+# successful, otherwise non-zero; we give -1, as fflush does.  (mawk,
+# onetrue-awk and gawk all stop the program with a write error instead;
+# see DESIGN.md.)
+class _FailingCloseStream(_FailingStream):
+    """A fake output file whose flush() and close() both fail.
+
+    Like a real Python file it is closed afterwards all the same, so the
+    garbage collector's own close() later does not fail again.
+    """
+
+    def close(self) -> None:
+        if not self.closed:
+            super().close()
+            raise self.error
+
+
+def test_close_dev_stdout_returns_minus_one_when_the_flush_fails() -> None:
+    from pyawk import runtime
+
+    table = runtime.IOManager(_FailingStream(OSError(28, "No space")), io.BytesIO())
+    table.specials_used.add("/dev/stdout")
+    assert table.close("/dev/stdout") == -1
+
+
+def test_close_dev_stderr_returns_minus_one_when_the_flush_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pyawk import runtime
+
+    monkeypatch.setattr(sys, "stderr", _FailingStream(OSError(28, "No space")))
+    table = runtime.IOManager(io.StringIO(), io.BytesIO())
+    table.specials_used.add("/dev/stderr")
+    assert table.close("/dev/stderr") == -1
+
+
+def test_close_dev_stdout_lets_broken_pipe_through() -> None:
+    from pyawk import runtime
+
+    table = runtime.IOManager(_FailingStream(BrokenPipeError()), io.BytesIO())
+    table.specials_used.add("/dev/stdout")
+    with pytest.raises(BrokenPipeError):
+        table.close("/dev/stdout")
+
+
+def test_close_of_a_file_returns_minus_one_when_the_last_write_fails() -> None:
+    table = _io_table_with(_FailingCloseStream(OSError(28, "No space")))
+    assert table.close("out") == -1
+    assert "out" not in table.outputs  # it is closed all the same
+
+
+@pytest.mark.skipif(not os.path.exists("/dev/full"), reason="needs /dev/full")
+def test_close_on_a_full_disk_gives_minus_one() -> None:
+    prog = 'BEGIN { printf "x" > "/dev/full"; print close("/dev/full") }'
+    assert awk(prog) == ("-1\n", 0)
+
+
 def test_close_of_a_special_name_never_opened_returns_minus_one() -> None:
     # Nothing was opened, so nothing was closed successfully (gawk).  mawk
     # and onetrue-awk close the real descriptor for /dev/stdout, and return
