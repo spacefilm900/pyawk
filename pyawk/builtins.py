@@ -96,77 +96,124 @@ def _format_c_int(flags: str, width: str | None, prec: str | None, conv: str, n:
     return body.rjust(w)
 
 
+# A parsed format is a list of pieces: literal text (a str) or a
+# conversion (a _Spec tuple).  Parsing the same format string for every
+# record is wasted work, so parsed formats are kept in a small cache.
+# (flags, width, precision, conversion letter, the original text, and a
+# ready-made Python format for the cases Python's ``%`` gets right.)
+_Spec = tuple[str, str | None, str | None, str, str, str | None]
+_FORMAT_CACHE: dict[str, list[str | _Spec]] = {}
+_FORMAT_CACHE_MAX = 256
+
+
+def _parse_format(fmt: str) -> list[str | _Spec]:
+    pieces = _FORMAT_CACHE.get(fmt)
+    if pieces is not None:
+        return pieces
+    pieces = []
+    pos = 0
+    for m in _SPEC_RE.finditer(fmt):
+        if m.start() > pos:
+            pieces.append(fmt[pos : m.start()])
+        pos = m.end()
+        flags, width, prec, conv = m.groups()  # unpack the 4 regex groups
+        star = width == "*" or prec == "*"
+        if conv == "%":
+            pieces.append("%")  # "%%" (with any flags): a literal %
+        elif conv not in "diouxXeEfFgGcs" and not star:
+            # Unknown conversion: emitted verbatim (gawk does the same).
+            # With a "*" it still uses up arguments, so it stays a spec.
+            pieces.append(m.group(0))
+        else:
+            pyfmt = None
+            if not star:
+                spec = "%" + flags + (width or "") + ("." + prec if prec is not None else "")
+                if conv in "eEfFgGs":
+                    pyfmt = spec + conv
+                elif conv in "diouxX" and prec is None and "#" not in flags:
+                    # Without a precision or "#", Python formats integers
+                    # exactly like C (see _format_c_int for the exceptions),
+                    # except that C ignores "+" and " " for unsigned ones.
+                    if conv in "di" or ("+" not in flags and " " not in flags):
+                        pyfmt = spec + ("d" if conv in "diu" else conv)
+            pieces.append((flags, width, prec, conv, m.group(0), pyfmt))
+    if pos < len(fmt):
+        pieces.append(fmt[pos:])
+    if len(_FORMAT_CACHE) >= _FORMAT_CACHE_MAX:
+        _FORMAT_CACHE.clear()
+    _FORMAT_CACHE[fmt] = pieces
+    return pieces
+
+
 def format_printf(fmt: str, args: list[Value], convfmt: str = "%.6g") -> str:
     """Implement AWK printf/sprintf formatting (C semantics).
 
-    The format is scanned for ``%`` conversions; text between them is copied.
-    Each conversion consumes the next argument, and is rendered with Python's
-    own ``%`` operator, whose rules are those of C's printf.  Missing
-    arguments act as empty/zero rather than being an error.
+    The format is split into ``%`` conversions and the text between them
+    (see _parse_format); text is copied.  Each conversion consumes the
+    next argument, and is rendered with Python's own ``%`` operator, whose
+    rules are those of C's printf (integers with a precision or ``#`` are
+    the exception, see _format_c_int).  Missing arguments act as empty/zero
+    rather than being an error.
     """
     out: list[str] = []
-    pos = 0
     argi = 0
-
-    # A function defined inside another can read the outer variables.
-    # ``nonlocal argi`` is needed because it also *changes* one of them.
-    def next_arg() -> Value:
-        nonlocal argi
-        if argi < len(args):
-            v = args[argi]
-            argi += 1
-            return v
-        argi += 1
-        return UNINIT
-
-    while True:
-        m = _SPEC_RE.search(fmt, pos)
-        if m is None:
-            out.append(fmt[pos:])
-            break
-        out.append(fmt[pos : m.start()])
-        pos = m.end()
-        flags, width, prec, conv = m.groups()  # unpack the 4 regex groups
-        if conv == "%":
-            out.append("%")
+    nargs = len(args)
+    for piece in _parse_format(fmt):
+        if type(piece) is str:
+            out.append(piece)
             continue
+        flags, width, prec, conv, raw, pyfmt = piece  # type: ignore[misc]
         # "*" takes the width (or precision) from the next argument.
         if width == "*":
-            w = _to_c_int(to_num(next_arg()))
+            w = _to_c_int(to_num(args[argi] if argi < nargs else UNINIT))
+            argi += 1
             if w < 0:
                 flags += "-"
                 w = -w
             width = str(w)
         if prec == "*":
-            p = _to_c_int(to_num(next_arg()))
+            p = _to_c_int(to_num(args[argi] if argi < nargs else UNINIT))
+            argi += 1
             prec = str(p) if p >= 0 else None
-        spec = "%" + flags + (width or "") + ("." + prec if prec is not None else "")
+        v = args[argi] if argi < nargs else UNINIT  # the argument to format
+        argi += 1
         if conv in "diouxX":
-            n = _to_c_int(to_num(next_arg()))
-            out.append(_format_c_int(flags, width, prec, conv, n))
+            n = _to_c_int(v if type(v) is float else to_num(v))
+            if pyfmt is not None and (n >= 0 or conv in "di"):
+                out.append(pyfmt % n)
+            else:  # (this also handles negative numbers for %o %u %x %X)
+                out.append(_format_c_int(flags, width, prec, conv, n))
         elif conv in "eEfFgG":
-            x = to_num(next_arg())
+            x = v if type(v) is float else to_num(v)
             if math.isinf(x) or math.isnan(x):
                 special = special_float_str(x)
                 text = special if conv.islower() else special.upper()
                 out.append(("%" + flags.replace("0", "") + (width or "") + "s") % text)
+            elif pyfmt is not None:
+                out.append(pyfmt % x)
             else:
+                spec = "%" + flags + (width or "") + ("." + prec if prec is not None else "")
                 out.append((spec + conv) % x)
         elif conv == "c":
             # %c of a number is the character with that code; of a string,
             # its first character.
-            v = next_arg()
             if type(v) is float:
-                n = _to_c_int(v)
-                ch = chr(n) if 0 <= n < 0x110000 else ""
+                c = _to_c_int(v)
+                ch = chr(c) if 0 <= c < 0x110000 else ""
             else:
                 ch = to_str(v, convfmt)[:1]
             out.append(("%" + flags.replace("0", "") + (width or "") + "s") % ch)
         elif conv == "s":
-            out.append((spec + "s") % to_str(next_arg(), convfmt))
+            text = v if type(v) is str else to_str(v, convfmt)
+            if pyfmt is not None:
+                out.append(pyfmt % text)
+            else:
+                spec = "%" + flags + (width or "") + ("." + prec if prec is not None else "")
+                out.append((spec + "s") % text)
         else:
-            # Unknown conversion: emit verbatim (gawk does the same).
-            out.append(m.group(0))
+            # Unknown conversion after a "*": emitted verbatim, as above.
+            argi -= 1  # it uses no argument of its own
+            out.append(raw)
     return "".join(out)
 
 
