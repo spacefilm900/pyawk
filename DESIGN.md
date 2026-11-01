@@ -356,13 +356,18 @@ previous match (`gsub(/x*/, "-", "abxd")` → `-a-b-d-`).
 **How to measure.** `scripts/bench.py` runs nine workloads (below) on a
 generated, seeded 200 000-line input with pyawk, mawk, `gawk --posix` and
 onetrue-awk, keeps the best of three wall-clock runs and checks every
-output against mawk's. `--save LABEL` stores a run in `.bench/` (ignored
-by git) and `--compare LABEL` adds a speedup column against a saved run.
+output against mawk's (or, without mawk, the first reference awk found).
+The reference awks are looked up by name on PATH (`mawk`, `gawk`, and
+`original-awk`/`onetrue-awk`/`bwk-awk`); only those found are timed, and
+`--path NAME=PROGRAM` points at one that is not on PATH. `--save LABEL`
+stores a run in `.bench/` (ignored by git) and `--compare LABEL` adds a
+speedup column against a saved run.
 
 ```sh
 .venv/bin/python scripts/bench.py --save baseline          # before a change
 .venv/bin/python scripts/bench.py --compare baseline       # after it
 .venv/bin/python scripts/bench.py --only fields,funcs --awks pyawk
+.venv/bin/python scripts/bench.py --path gawk=/opt/gawk/bin/gawk --path onetrue=./a.out
 ```
 
 | workload | program (abridged) | exercises |

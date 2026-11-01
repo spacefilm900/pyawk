@@ -118,6 +118,7 @@ Both `KNOWN_FAILURES` lists are empty.
 .venv/bin/python scripts/bench.py --save baseline     # store a run in .bench/
 .venv/bin/python scripts/bench.py --compare baseline  # add a speedup column
 .venv/bin/python scripts/bench.py --only funcs --awks pyawk,mawk
+.venv/bin/python scripts/bench.py --path onetrue=/path/to/a.out  # an awk not on PATH
 ```
 
 pyawk compiles the program to Python closures before running it; it is
