@@ -44,6 +44,18 @@ def test_v_assignment_and_operand_assignment(tmp_path: Path) -> None:
     assert awk("BEGIN { print x }", assignments=[("x", "a\\tb")])[0] == "a\tb\n"
 
 
+def test_v_assignment_to_nf() -> None:
+    # ``-v NF=3`` used to crash with AttributeError: the -v assignments ran
+    # before the record state existed.  mawk and gawk --posix print 3 and a
+    # $0 rebuilt from three empty fields (two OFS); onetrue-awk prints 0.
+    # Each record still sets its own NF.  (CodeRabbit v1.0, finding 3.)
+    assert awk('BEGIN { print NF; print "[" $0 "]" }', assignments=[("NF", "3")]) == ("3\n[  ]\n", 0)
+    assert awk("{ print NF; print }", "a b c d e\n", assignments=[("NF", "3")])[0] == "5\na b c d e\n"
+    # together with -F (cli.py turns -F into an FS assignment)
+    out, _ = awk("{ print NF, $1 }", "a:b:c\n", assignments=[("FS", ":"), ("NF", "2")])
+    assert out == "3 a\n"
+
+
 def test_paragraph_mode() -> None:
     out, _ = awk('BEGIN { RS = "" } { print NR ": " $1 "-" $NF " (" NF ")" }', "\n\na b\nc\n\n\nd e\n\n")
     assert out == "1: a-c (3)\n2: d-e (2)\n"

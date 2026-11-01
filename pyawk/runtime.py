@@ -456,9 +456,6 @@ class Interpreter:
         # A *dict comprehension*: builds {name: value} for every environment
         # variable, each wrapped as a strnum.
         self.arrays["ENVIRON"] = {k: make_strnum(v) for k, v in os.environ.items()}
-        # -v and -F settings (with escape processing; see command_line_assign).
-        for name, value in assignments:
-            self.command_line_assign(name, value)
 
         # Record state.  Fields are split *lazily*: reading a record only
         # stores its text, and ``fields`` stays None until a program actually
@@ -487,6 +484,12 @@ class Interpreter:
         self.seed = 0.0
         self.rng = random.Random(0)
         self.exit_code = 0
+
+        # -v and -F settings (with escape processing; see command_line_assign).
+        # They run last, once every attribute above exists: assigning NF
+        # (``-v NF=3``) rebuilds the record, which needs the record state.
+        for name, value in assignments:
+            self.command_line_assign(name, value)
 
     # ------------------------------------------------------------ top level
     def run(self) -> int:
