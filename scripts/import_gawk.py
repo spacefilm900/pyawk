@@ -315,6 +315,34 @@ def expected_from_ok(
     return None, False, "local gawk differs from .ok, which mixes in diagnostics"
 
 
+def pinned_expected(
+    name: str, ok: str, refs: dict[str, RefResult], exact: RefResult, exact_sep: RefResult
+) -> tuple[str, str] | None:
+    """The expected stdout and note for a case pinned to gawk's .ok file.
+
+    Returns None if ``name`` is in neither DECIDED nor REGEX_POSIX.  A pinned
+    case takes its expected output from the local gawk (the stdout part of
+    the .ok), so two things are checked first, and the import stops if
+    either fails: the local gawk must really reproduce the .ok (another
+    gawk build might not), and the reference awk named for the case must
+    still agree with it.
+    """
+    if name in DECIDED:
+        agreeing, label, why = "mawk", "mawk", DECIDED[name]
+    elif name in REGEX_POSIX:
+        agreeing, label, why = "gawk", "gawk --posix", REGEX_POSIX[name]
+    else:
+        return None
+    note = expected_from_ok(ok, exact, exact_sep, name == "exitval1")[2]
+    if note != "local gawk reproduces .ok":
+        raise SystemExit(f"{name}: the local gawk does not reproduce gawk's .ok ({note})")
+    ref = refs[agreeing]
+    if ref.stdout != exact_sep.stdout or failed(ref):
+        which = "DECIDED" if name in DECIDED else "REGEX_POSIX"
+        raise SystemExit(f"{name}: {label} no longer matches gawk's .ok; review {which}")
+    return exact_sep.stdout, f"expected: gawk .ok (agree: {label}); {why}"
+
+
 def classify(source: str, ok: str, refs: dict[str, RefResult], exact: RefResult, exact_sep: RefResult,
              always_exit: bool) -> tuple[str, str, str, str | None]:
     """Decide (status, reason, refs-note, expected stdout) for one case."""
@@ -449,17 +477,10 @@ def main() -> int:
         ok_file = opts.src / f"{name}.ok"
         ok = ok_file.read_text(encoding="utf-8", errors="surrogateescape") if ok_file.exists() else ""
         status, reason, note, expected = classify(source, ok, refs, exact, exact_sep, name == "exitval1")
-        if name in DECIDED:
-            # gawk in its default mode reproduces the .ok; mawk must agree.
-            if refs["mawk"].stdout != exact_sep.stdout:
-                raise SystemExit(f"{name}: mawk no longer matches gawk's .ok; review DECIDED")
-            status, reason, expected = "run", "", exact_sep.stdout
-            note = f"expected: gawk .ok (agree: mawk); {DECIDED[name]}"
-        if name in REGEX_POSIX:
-            if refs["gawk"].stdout != exact_sep.stdout or failed(refs["gawk"]):
-                raise SystemExit(f"{name}: gawk --posix no longer matches gawk's .ok; review REGEX_POSIX")
-            status, reason, expected = "run", "", exact_sep.stdout
-            note = f"expected: gawk .ok (agree: gawk --posix); {REGEX_POSIX[name]}"
+        pinned = pinned_expected(name, ok, refs, exact, exact_sep)
+        if pinned is not None:
+            status, reason = "run", ""
+            expected, note = pinned
         if spec.note:
             note = spec.note + "; " + note
         (DEST / f"{name}.out").write_text(expected or "", encoding="utf-8", errors="surrogateescape")
