@@ -235,15 +235,19 @@ def run_case(case: Case, awk: list[str], timeout: float = 20.0) -> subprocess.Co
     PYTHONPATH lets ``python -m pyawk`` find the package without installing
     it; LC_ALL=C gives every awk the same, simple locale.  stdin is the
     case's ``.stdin`` data if it has one, and otherwise empty, so a program
-    that wrongly reads it cannot hang.  ``.environ`` lines are added to the
-    environment.
+    that wrongly reads it cannot hang.  Inherited ``PYAWK_T_*`` variables are
+    dropped and ``.environ`` lines are added to the environment.
 
     Golden cases run in a throwaway copy of their category directory, so a
     program that writes files (``print > "out.txt"``) cannot litter the
     repository or see leftovers from an earlier run; the copy is deleted
     afterwards.  Imported cases run in place, as their importers expect.
     """
-    env = dict(os.environ)
+    # Start from our own environment, minus any PYAWK_T_ variables: those
+    # names are reserved for ``.environ`` files, and a stray one exported
+    # in the user's shell would otherwise show up in ENVIRON cases and make
+    # their output depend on who runs them.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYAWK_T_")}
     env["PYTHONPATH"] = str(REPO) + os.pathsep + env.get("PYTHONPATH", "")
     env["LC_ALL"] = "C"
     env.update(case.extra_env())
