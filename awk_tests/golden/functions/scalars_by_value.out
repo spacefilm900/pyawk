@@ -1,0 +1,4 @@
+changed orig elem
+1
+local global x
+global set in function

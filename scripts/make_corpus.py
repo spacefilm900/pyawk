@@ -118,6 +118,149 @@ add("builtins", "string_to_number", 'BEGIN { print "3x" + 1, " 12 " * 2, "abc" +
 # hand-corrected to the onetrue-awk/gawk answer (listed in golden/OVERRIDES).
 add("builtins", "undefined_escapes", '{ s = $0; sub(/o/, "[\\&]", s); t = $0; gsub(/o/, "\\\\&", t); u = $0; sub(/o/, v, u)\n  print s, t, u, "\\q", length("\\q"), ($0 ~ "f\\.o"), ($0 ~ "f\\\\.o") }\n', "foo\nf.o\n", "-v 'v=<\\&>'")
 
+# ---------------- functions (user-defined)
+add("functions", "call_return", r'''# A function may be used before its definition; a newline may come
+# before the body and after commas; ";" may follow a definition.
+BEGIN {
+	print max(3, 7), max("abc", "abd"), add(1,
+	    2) add(3, 4)
+	print twice(twice(5)), max(add(1, 1), 1) * 10
+}
+function max(m, n) { return m > n ? m : n }
+function add(a,
+             b)
+{
+	return a + b
+};
+function twice(x) { return 2 * x }
+''')
+add("functions", "return_values", r'''function none() { return }
+function fall_off() { x = 1 }
+function paren() { return (42) }
+function newline() { return 7
+}
+function re() { return /an/ }
+function id(v) { return v }
+{
+	a = none(); b = fall_off()
+	print "[" a "]", a + 0, length(b), paren(), newline(), re()
+	# $1 is a numeric string: it still compares as a number after a return
+	print (id($1) < 9), (id($1 "") < 9)
+}
+''', "10 banana\n")
+add("functions", "scalars_by_value", r'''function change(s, e) { s = "changed"; e = "changed"; return s }
+function shadow(x) { x = "local"; g = "global set in function"; return x }
+BEGIN {
+	s = "orig"; arr[1] = "elem"
+	print change(s, arr[1]), s, arr[1]
+	change(s, arr[2]); print (2 in arr)   # passing arr[2] creates it
+	x = "global x"; print shadow(x), x; print g
+}
+''')
+add("functions", "arrays_by_reference", r'''function fill(a, n,    i) { for (i = 1; i <= n; i++) a[i] = i * i }
+function count(a,    k, n) { for (k in a) n++; return n + 0 }
+function remove(a, k) { delete a[k] }
+function clear(a) { delete a }
+BEGIN {
+	fill(sq, 5); print length(sq), count(sq), sq[3]
+	remove(sq, 3); print length(sq), (3 in sq), (4 in sq)
+	clear(sq); print length(sq); sq["new"] = 1; print length(sq)
+}
+''')
+add("functions", "uninit_becomes_array", r'''# An unused variable passed to a function that uses the parameter as an
+# array becomes that array in the caller, even through several calls.
+function set(a, k, v) { a[k] = v }
+function pass(b) { set(b, "deep", "yes") }
+function local_demo(    loc) { pass(loc); return loc["deep"] }
+function as_scalar(s) { s = 5 }
+BEGIN {
+	set(x, 1, "one"); print x[1], length(x)
+	pass(y); print y["deep"]
+	print local_demo()
+	as_scalar(z); print "[" z "]"
+}
+''')
+add("functions", "locals", r'''# Extra parameters are local variables; they start out uninitialized on
+# every call and may be used as scalars or arrays.
+function f(n,    loc, arr) { loc++; arr[n] = n; return loc + length(arr) }
+function empty(    u) { return (u == 0) (u == "") length(u) }
+function words(s,    w, n, i, out) {
+	n = split(s, w)
+	for (i = n; i >= 1; i--) out = out (i < n ? " " : "") w[i]
+	return out
+}
+BEGIN { print f(1), f(2), f(3), empty(); print words("one two three") }
+{ print words($0) }
+''', "a b c\nhello world\n")
+add("functions", "recursion", r'''function fact(n) { return n <= 1 ? 1 : n * fact(n - 1) }
+function fib(n) { return n < 2 ? n : fib(n - 1) + fib(n - 2) }
+function ack(m, n) {
+	if (m == 0) return n + 1
+	if (n == 0) return ack(m - 1, 1)
+	return ack(m - 1, ack(m, n - 1))
+}
+function depth(n) { return n == 0 ? 0 : 1 + depth(n - 1) }
+function fresh(n,    a) { a[n] = 1; if (n > 1) fresh(n - 1); return length(a) }
+function hanoi(n, from, to, via) {
+	if (n == 0) return
+	hanoi(n - 1, from, via, to); moves++; hanoi(n - 1, via, to, from)
+}
+BEGIN {
+	print fact(10), fact(20), fib(20), ack(2, 3), ack(3, 3)
+	print depth(3000), fresh(5)
+	hanoi(10, "A", "C", "B"); print moves
+}
+''')
+add("functions", "builtins_on_params", r'''function edit(arr, s,    n, w) {
+	n = split("a b c", w); arr["n"] = n
+	sub(/b/, "B", arr["x"])
+	s = "zzz"; gsub(/z/, "y", s)
+	if (match(s, /y+/)) arr["m"] = RSTART "," RLENGTH
+	return n w[3] s length(arr) (("x") in arr)
+}
+function lines(file, a,    line, n) {
+	while ((getline line < file) > 0) a[++n] = line
+	close(file)
+	return n
+}
+BEGIN { a["x"] = "abc"; print edit(a), a["x"], a["n"], a["m"] }
+NR == 1 { n = lines(FILENAME, all); print n, all[1], all[n] }
+''', "first\nsecond\nthird\n")
+add("functions", "per_record", r'''# Functions in patterns and actions, with fields as arguments.
+function big(x) { return x > 4 }
+function field(n) { return $n }
+function rate(pay, hours) { return hours > 0 ? pay * hours : "none" }
+big($2) { print "big:", $1 }
+{ print field(1), field(NF), rate($2, $3) }
+END { print NR, field(1) }
+''', EMP)
+add("functions", "exit_in_function", r'''function stop(code) { print "stopping"; exit code; print "not reached" }
+BEGIN { print "begin" }
+NR == 2 { stop(3) }
+{ print }
+END { print "end", NR; stop(4); print "not reached" }
+''', "a\nb\nc\n")
+add("functions", "sort_and_join", r'''# Classic helpers: insertion sort of an array parameter, and join.
+function isort(A, n,    i, j, t) {
+	for (i = 2; i <= n; i++) {
+		t = A[i]
+		for (j = i; j > 1 && A[j-1] > t; j--) A[j] = A[j-1]
+		A[j] = t
+	}
+}
+function join(A, n, sep,    i, s) {
+	for (i = 1; i <= n; i++) s = s (i > 1 ? sep : "") A[i]
+	return s
+}
+{ v[NR] = $1 }
+END { isort(v, NR); print join(v, NR, ",") }
+''', "10\n2\n33\n4\n-5\n2.5\n")
+# mawk refuses a call with more arguments than the function has parameters;
+# onetrue-awk and gawk warn (on stderr) and run it: see golden/OVERRIDES.
+add("functions", "extra_args", r'''function g(a) { return a * 2 }
+BEGIN { print g(1, x++), x }
+''')
+
 # ---------------- one-liners (from "The AWK Programming Language")
 add("one_liners", "count_lines", "END { print NR }\n", EMP)
 add("one_liners", "third_line", "NR == 3\n", EMP)

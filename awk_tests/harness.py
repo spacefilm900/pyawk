@@ -36,7 +36,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 GOLDEN = ROOT / "golden"
 REPO = ROOT.parent
-CATEGORIES = ("basic", "fields", "patterns", "control", "arrays", "builtins", "one_liners")
+CATEGORIES = ("basic", "fields", "patterns", "control", "arrays", "builtins", "functions", "one_liners")
 ONETRUE = ROOT / "onetrue"
 # Every category we know about: the golden ones plus the imported suite.
 ALL_CATEGORIES = (*CATEGORIES, "onetrue")

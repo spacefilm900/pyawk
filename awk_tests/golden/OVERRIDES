@@ -4,3 +4,4 @@
 # regen_golden.py never rewrites these; see DESIGN.md.
 # Format: CATEGORY/NAME  reason
 builtins/undefined_escapes  mawk keeps the backslash of undefined escapes like "\&", "\q", "\." (onetrue-awk and gawk drop it)
+functions/extra_args  mawk rejects a call with more arguments than the function has parameters (fatal); onetrue-awk and gawk warn on stderr and run it
