@@ -78,7 +78,8 @@ safety check and the NFA are all produced from that tree.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+import weakref
+from collections.abc import Callable, Iterator
 from functools import lru_cache
 
 from .errors import AwkRuntimeError
@@ -541,6 +542,152 @@ def _safe(node: object) -> bool:
     return True
 
 
+# ------------------------------------------------ backtracking check
+# Python's matcher explores the ways a pattern can match one at a time, and
+# on a failing text it may try all of them.  For ``(a*)*b`` on "aaaa..."
+# that is every way of cutting the a's into groups: 2**n tries.  The
+# automata never do that (they follow all ways at once), but they run in
+# Python, not C, so we keep Python's matcher for patterns where it is
+# provably cheap, and send everything else to the automata.
+#
+# The patterns kept are a "run" (a concatenation, or a single item) whose
+# items are each one of:
+#
+#   * one character set (``a``, ``.``, ``[0-9]``), an anchor, or ``()``;
+#   * a character set repeated (``a*``, ``[0-9]+``, ``x?``, ``a{2,5}``);
+#   * an alternation of plain strings (``(foo|bar)``), with the product of
+#     the alternation sizes in the run at most _MAX_CHOICES;
+#
+# or an alternation of such runs.  Within a run, a variable-length item
+# X (a repeat whose min and max differ) is *forced* when no character X
+# can take could also be taken by what follows it, i.e. by the first
+# character of the following items up to and including the first one that
+# must match something.  ``[0-9]+\.`` has a forced ``[0-9]+``: when Python
+# gives back a digit, ``\.`` fails on it at once, so retrying costs O(1).
+# Otherwise X is *ambiguous* (``.*`` in ``a.*b``): each of its O(n)
+# lengths may be retried with the rest of the pattern.  That is still cheap
+# if the rest is cheap, so we allow ONE ambiguous item, provided every
+# variable item after it is forced and takes no character the ambiguous one
+# can take (so the later items cannot re-scan the same text for each try).
+# A second ambiguous item multiplies the tries (``.*x.*y`` is cubic).
+#
+# Even so, Python tries each start position, and each try may scan to the
+# end of the text: O(n**2) per search on a failing text (0.3 s for
+# ``[0-9]+5\.`` on 10 000 fives).  So for texts longer than LONG_TEXT,
+# patterns with any variable item switch to the automata (``for_long``).
+_MAX_CHOICES = 64
+
+
+def _overlap(a: Chars, b: Chars) -> bool:
+    """True if some character is in both sets."""
+    if a.negated and b.negated:
+        return True  # each excludes finitely many ranges: plenty is left in both
+    if a.negated:
+        a, b = b, a
+    if not b.negated:
+        return any(lo1 <= hi2 and lo2 <= hi1 for lo1, hi1 in a.ranges for lo2, hi2 in b.ranges)
+    # a lists characters, b is "anything but ...": they overlap unless each
+    # of a's ranges lies inside one of b's (merged, so non-adjacent) ranges.
+    return not all(any(lo2 <= lo1 and hi1 <= hi2 for lo2, hi2 in b.ranges) for lo1, hi1 in a.ranges)
+
+
+class _Item:
+    """What the backtracking check needs to know about one item of a run."""
+
+    __slots__ = ("first", "variable", "mandatory", "choices", "chars")
+
+    def __init__(self, first: list[Chars], variable: bool, mandatory: bool, choices: int, chars: Chars | None) -> None:
+        self.first = first  # the sets its first character can come from
+        self.variable = variable  # it can match texts of different lengths
+        self.mandatory = mandatory  # it always consumes something (or is $)
+        self.choices = choices  # how many alternatives Python may try
+        self.chars = chars  # for a repeat: the repeated set
+
+
+def _plain_string(node: object) -> bool:
+    return type(node) is Chars or (type(node) is Cat and all(type(x) is Chars for x in node.items))  # type: ignore[attr-defined]
+
+
+def _item(node: object) -> _Item | None:
+    """Classify one item of a run (None: not allowed in a run)."""
+    t = type(node)
+    if t is Chars:
+        return _Item([node], False, True, 1, None)  # type: ignore[list-item]
+    if node is BOL or node is EMPTY:
+        return _Item([], False, False, 1, None)  # matches no text: transparent
+    if node is EOL:
+        return _Item([], False, True, 1, None)  # nothing can follow it
+    if t is Repeat and type(node.node) is Chars:  # type: ignore[attr-defined]
+        lo, hi = node.min, node.max  # type: ignore[attr-defined]
+        if hi == 0:
+            return _Item([], False, False, 1, None)
+        return _Item([node.node], lo != hi, lo > 0, 1, node.node)  # type: ignore[attr-defined]
+    if t is Alt and all(_plain_string(b) for b in node.branches):  # type: ignore[attr-defined]
+        first = [b if type(b) is Chars else b.items[0] for b in node.branches]  # type: ignore[attr-defined]
+        return _Item(first, False, True, len(first), None)
+    return None
+
+
+def _run_safe(node: object) -> bool:
+    items = [_item(x) for x in (node.items if type(node) is Cat else [node])]  # type: ignore[attr-defined]
+    if any(it is None for it in items):
+        return False
+    choices = 1
+    for it in items:
+        choices *= it.choices  # type: ignore[union-attr]
+    if choices > _MAX_CHOICES:
+        return False
+    ambiguous: Chars | None = None  # the set of the ambiguous item, once seen
+    for k, it in enumerate(items):
+        if not it.variable:  # type: ignore[union-attr]
+            continue
+        follow: list[Chars] = []
+        for later in items[k + 1 :]:
+            follow += later.first  # type: ignore[union-attr]
+            if later.mandatory:  # type: ignore[union-attr]
+                break
+        forced = not any(_overlap(it.chars, f) for f in follow)  # type: ignore[union-attr, arg-type]
+        if ambiguous is not None and (not forced or _overlap(ambiguous, it.chars)):  # type: ignore[union-attr, arg-type]
+            return False
+        if not forced:
+            ambiguous = it.chars  # type: ignore[union-attr]
+    return True
+
+
+def _backtrack_safe(node: object) -> bool:
+    """True if Python's matcher needs at most O(n) work per start position
+    (and O(n**2) per search) on any text of length n (see above)."""
+    return all(_run_safe(b) for b in (node.branches if type(node) is Alt else [node]))  # type: ignore[attr-defined]
+
+
+def _has_variable(node: object) -> bool:
+    """True if the tree contains a repeat whose min and max differ."""
+    t = type(node)
+    if t is Repeat:
+        return node.min != node.max or _has_variable(node.node)  # type: ignore[attr-defined]
+    if t is Cat:
+        return any(_has_variable(x) for x in node.items)  # type: ignore[attr-defined]
+    if t is Alt:
+        return any(_has_variable(b) for b in node.branches)  # type: ignore[attr-defined]
+    return False
+
+
+def _reverse(node: object) -> object:
+    """The tree matching the reversed texts: ``ab*$`` becomes ``^b*a``."""
+    t = type(node)
+    if t is Cat:
+        return Cat([_reverse(x) for x in reversed(node.items)])  # type: ignore[attr-defined]
+    if t is Alt:
+        return Alt([_reverse(b) for b in node.branches])  # type: ignore[attr-defined]
+    if t is Repeat:
+        return Repeat(_reverse(node.node), node.min, node.max)  # type: ignore[attr-defined]
+    if node is BOL:
+        return EOL
+    if node is EOL:
+        return BOL
+    return node  # a character set, or EMPTY
+
+
 # ------------------------------------------------------------- the NFA
 # States are numbered; for state s, _kind[s] says what it does:
 _CHAR, _SPLIT, _EPS, _BOL, _EOL, _MATCH = range(6)
@@ -623,25 +770,38 @@ class _DState:
         self.next: dict[str, _DState | None] = {}  # filled in lazily
 
 
-_DFA_LIMIT = 10000  # cached DFA states per pattern before starting afresh
+# Cached DFA states per automaton.  When a pattern needs more (an automaton
+# can in principle have 2**(NFA size) states, e.g. ``(a|b)*a(a|b){20}``), the
+# cache is emptied and states are rebuilt as the text needs them.  That
+# bounds memory, and the time stays linear: each input character builds at
+# most one new state, which costs time proportional to the pattern's size.
+_DFA_LIMIT = 10000
 _UNSEEN = object()  # marker: "no transition cached for this character"
 
 
-class LongestPattern:
-    """A compiled ERE that reports POSIX leftmost-longest matches.
+class _DFA:
+    """A lazily built DFA over one NFA (see the module docstring).
 
-    Offers the part of ``re.Pattern``'s interface that pyawk uses:
-    ``search(s, pos)`` and ``finditer(s)``, returning ``Span`` objects.
+    ``unanchored=True`` puts the NFA's start state back into the set after
+    every character, so a match may begin anywhere: the DFA then answers
+    "does a match end here?" for every position in a single pass.  Such a
+    DFA never gets stuck (its set always holds the start state).  With
+    ``unanchored=False`` the match must begin where the scan begins, and
+    ``step`` returns None once no match can continue.
     """
 
-    def __init__(self, tree: object, py: re.Pattern[str]) -> None:
-        self.py = py
-        self.pattern = py.pattern
-        self.flags = py.flags
-        self.nfa = _NFA(tree)
+    def __init__(self, nfa: _NFA, unanchored: bool) -> None:
+        self.nfa = nfa
+        self.inject = frozenset((nfa.start,)) if unanchored else frozenset()
         self.cache: dict[tuple[frozenset[int], bool], _DState] = {}
-        self.start_bol = self.state(frozenset((self.nfa.start,)), True)
-        self.start_mid = self.state(frozenset((self.nfa.start,)), False)
+        self.initial_states: dict[bool, _DState] = {}
+
+    def initial(self, at_start: bool) -> _DState:
+        """The state before reading anything; ``at_start``: at the text's start, so ``^`` holds."""
+        d = self.initial_states.get(at_start)
+        if d is None:
+            d = self.initial_states[at_start] = self.state(frozenset((self.nfa.start,)), at_start)
+        return d
 
     def state(self, kernel: frozenset[int], at_start: bool) -> _DState:
         """The DFA state for NFA states ``kernel`` plus everything reachable
@@ -650,7 +810,11 @@ class LongestPattern:
         d = self.cache.get(key)
         if d is None:
             if len(self.cache) >= _DFA_LIMIT:
-                self.cache.clear()  # keep memory bounded on huge automata
+                # Start afresh.  States already built stay valid (a scan in
+                # progress keeps using its current one); they are simply no
+                # longer found here, and are freed once nothing uses them.
+                self.cache.clear()
+                self.initial_states.clear()
             chars, accept = self.closure(kernel, at_start, False)
             accept_end = accept or self.closure(kernel, at_start, True)[1]
             d = self.cache[key] = _DState(chars, accept, accept_end)
@@ -683,38 +847,138 @@ class LongestPattern:
     def step(self, d: _DState, ch: str) -> _DState | None:
         """The state after reading ``ch`` in state ``d`` (None: no match possible)."""
         sets, out1 = self.nfa.sets, self.nfa.out1
-        kernel = frozenset(out1[s] for s in d.chars if ch in sets[s])  # type: ignore[operator]
+        kernel = frozenset(out1[s] for s in d.chars if ch in sets[s]) | self.inject  # type: ignore[operator]
         nxt = self.state(kernel, False) if kernel else None
         d.next[ch] = nxt
         return nxt
 
+
+class LongestPattern:
+    """A compiled ERE that reports POSIX leftmost-longest matches.
+
+    Offers the part of ``re.Pattern``'s interface that pyawk uses:
+    ``search(s, pos)`` and ``finditer(s)``, returning ``Span`` objects, plus
+    ``found(s)`` for a plain yes/no answer.
+
+    ``py`` is the Python form of the pattern when Python may be trusted to
+    find where matches *start* (the pattern is ``_backtrack_safe``), or
+    None.  Without it every answer comes from automata, each in time
+    proportional to the text length:
+
+    * ``found``: one left-to-right pass of an unanchored DFA, stopping at
+      the first position where some match ends.
+    * ``search``: one right-to-left pass, over the *reversed* pattern
+      (``_reverse``), marks every position where a match starts; the
+      leftmost mark at or after ``pos`` is the POSIX start.  The marks are
+      kept for the last string seen, so the repeated searches of gsub,
+      split and FS (each continuing from the previous match) share one pass.
+      An anchored DFA then finds the longest match from that start.
+    """
+
+    def __init__(self, tree: object, py: re.Pattern[str] | None) -> None:
+        self.tree = tree
+        self.py = py
+        self.pattern = py.pattern if py is not None else _emit(tree)
+        self.flags = re.DOTALL
+        self.nfa = _NFA(tree)
+        self.fwd = _DFA(self.nfa, unanchored=False)  # longest match from a given start
+        self.cache = self.fwd.cache  # (kept for tests and debugging)
+        self._scan: _DFA | None = None  # unanchored, for found(); built on first use
+        self._rev: _DFA | None = None  # reversed pattern, for match starts
+        self._twin: LongestPattern | None = None
+        self._marked: str | None = None  # the string self._marks belongs to
+        self._marks = bytearray()
+
+    def dfas(self) -> list[_DFA]:
+        """The automata built so far (for tests)."""
+        return [d for d in (self.fwd, self._scan, self._rev) if d is not None]
+
     def longest(self, s: str, start: int) -> int:
         """End of the longest match starting at ``start`` (-1 if none)."""
-        d = self.start_bol if start == 0 else self.start_mid
+        dfa = self.fwd
+        d: _DState | None = dfa.initial(start == 0)
         last = -1
         n = len(s)
         i = start
-        step = self.step
+        step = dfa.step
         while True:
             if i == n:
-                return i if d.accept_end else last
-            if d.accept:
+                return i if d.accept_end else last  # type: ignore[union-attr]
+            if d.accept:  # type: ignore[union-attr]
                 last = i
             ch = s[i]
-            nxt = d.next.get(ch, _UNSEEN)
+            nxt = d.next.get(ch, _UNSEEN)  # type: ignore[union-attr]
             if nxt is _UNSEEN:  # this transition has not been computed yet
-                nxt = step(d, ch)
+                nxt = step(d, ch)  # type: ignore[arg-type]
             if nxt is None:
                 return last
-            d = nxt
+            d = nxt  # type: ignore[assignment]
             i += 1
+
+    def found(self, s: str) -> bool | None:
+        """True if the pattern matches somewhere in ``s``, else None
+        (None rather than False, like ``re.search``, so callers can test
+        ``is not None`` either way)."""
+        if self.py is not None:
+            return True if self.py.search(s) is not None else None
+        dfa = self._scan
+        if dfa is None:
+            dfa = self._scan = _DFA(self.nfa, unanchored=True)
+        d = dfa.initial(True)
+        step = dfa.step
+        for ch in s:
+            if d.accept:
+                return True
+            nxt = d.next.get(ch)  # an unanchored DFA never gets stuck,
+            d = nxt if nxt is not None else step(d, ch)  # type: ignore[assignment]  # so None means "not cached"
+        return True if d.accept_end else None
+
+    def starts(self, s: str) -> bytearray:
+        """marks[i] == 1 where some match of the pattern starts at position i.
+
+        A match starting at i ends somewhere at or after i, so scanning the
+        text backwards with the reversed pattern, unanchored (it may "start"
+        at any end position), the positions where that scan is in an
+        accepting state are exactly the match starts.  The reversed
+        pattern's ``^`` stands for the original ``$`` (it holds only at the
+        beginning of the backwards scan, the end of the text) and its ``$``
+        for the original ``^`` (only at position 0).
+        """
+        if s is self._marked:
+            return self._marks
+        dfa = self._rev
+        if dfa is None:
+            dfa = self._rev = _DFA(_NFA(_reverse(self.tree)), unanchored=True)
+        n = len(s)
+        marks = bytearray(n + 1)
+        d = dfa.initial(True)
+        step = dfa.step
+        i = n
+        for ch in reversed(s):
+            if d.accept:
+                marks[i] = 1
+            nxt = d.next.get(ch)
+            d = nxt if nxt is not None else step(d, ch)  # type: ignore[assignment]
+            i -= 1
+        if d.accept_end:
+            marks[0] = 1
+        self._marked, self._marks = s, marks
+        return marks
 
     def search(self, s: str, pos: int = 0) -> Span | None:
         """The leftmost-longest match at or after ``pos``, or None."""
-        m = self.py.search(s, pos)  # Python finds the correct start
-        if m is None:
-            return None
-        start = m.start()
+        if self.py is not None:
+            m = self.py.search(s, pos)  # Python finds the correct start
+            if m is None:
+                return None
+            start = m.start()
+        else:
+            # A match starting at i never looks at text before i (EREs
+            # have no look-behind; ``^`` only checks i == 0), so the marks
+            # do not depend on pos.  ``bytearray.find`` scans in C.
+            start = self.starts(s).find(1, pos)
+            if start < 0:
+                return None
         return Span(s, start, self.longest(s, start))
 
     def finditer(self, s: str) -> Iterator[Span]:
@@ -726,6 +990,14 @@ class LongestPattern:
                 return
             yield m
             pos = m.end_ if m.end_ > m.start_ else m.start_ + 1
+
+    def long_twin(self) -> LongestPattern:
+        """This pattern with automata only, for long texts (see ``for_long``)."""
+        if self.py is None or not _has_variable(self.tree):
+            return self  # no quadratic risk
+        if self._twin is None:
+            self._twin = LongestPattern(self.tree, None)
+        return self._twin
 
 
 class Span:
@@ -760,26 +1032,74 @@ def translate(ere: str) -> str:
     return _emit(parse(ere))
 
 
+# Texts longer than this are searched with automata only, whatever the
+# pattern (when it has a variable-length part): see "backtracking check".
+LONG_TEXT = 2048
+
+# For each Python pattern whose search can be quadratic: its syntax tree,
+# replaced by the automata-only twin once one is needed.  A "weak"
+# dictionary forgets an entry when its pattern is no longer used elsewhere.
+_TWINS: weakref.WeakKeyDictionary[re.Pattern[str], object] = weakref.WeakKeyDictionary()
+
+Pattern = re.Pattern[str] | LongestPattern
+
+
 # ``@lru_cache`` remembers results: compiling the same regex text again (e.g.
 # a pattern tested on every input line) returns the cached compiled pattern.
 @lru_cache(maxsize=512)
-def _compile(ere: str) -> tuple[re.Pattern[str], re.Pattern[str] | LongestPattern]:
+def _compile(ere: str) -> tuple[Pattern, Pattern]:
     tree = parse(ere)
     try:
         py = re.compile(_emit(tree), re.DOTALL)
     except (re.error, RecursionError, OverflowError) as exc:
         raise AwkRuntimeError(f"bad regular expression /{ere}/: {exc}") from None
+    if not _backtrack_safe(tree):
+        lp = LongestPattern(tree, None)
+        return lp, lp
+    if _has_variable(tree):
+        _TWINS[py] = tree
     return py, (py if _safe(tree) else LongestPattern(tree, py))
 
 
-def compile_ere(ere: str) -> re.Pattern[str]:
-    """Compile an AWK ERE for yes/no tests (and match starts).
+def compile_ere(ere: str) -> Pattern:
+    """Compile an AWK ERE for yes/no tests and match starts: a Python
+    pattern when that is safe from backtracking blowups, else automata.
 
     A bad regex is a runtime error, since it may be built at run time.
     """
     return _compile(ere)[0]
 
 
-def compile_span(ere: str) -> re.Pattern[str] | LongestPattern:
+def compile_span(ere: str) -> Pattern:
     """Compile an AWK ERE for uses where the match's extent matters."""
     return _compile(ere)[1]
+
+
+def for_long(pat: Pattern) -> Pattern:
+    """The pattern to search a text longer than LONG_TEXT with: ``pat``
+    itself, or an automata-only twin when Python could take quadratic time."""
+    if type(pat) is LongestPattern:
+        return pat.long_twin()  # type: ignore[union-attr]
+    twin = _TWINS.get(pat)  # type: ignore[arg-type]
+    if twin is None:
+        return pat
+    if type(twin) is not LongestPattern:
+        twin = _TWINS[pat] = LongestPattern(twin, None)  # type: ignore[index]
+    return twin  # type: ignore[return-value]
+
+
+def matcher(pat: Pattern) -> Callable[[str], object]:
+    """A function answering "does ``pat`` match somewhere in this text?"
+    with a non-None value for yes (for ``~`` and bare ``/re/`` patterns)."""
+    if type(pat) is LongestPattern:
+        return pat.found  # type: ignore[union-attr]
+    search = pat.search
+    if pat not in _TWINS:  # type: ignore[operator]
+        return search  # never slow: use Python's matcher as it is
+
+    def test(s: str) -> object:
+        if len(s) > LONG_TEXT:
+            return for_long(pat).found(s)  # type: ignore[union-attr]
+        return search(s)
+
+    return test
