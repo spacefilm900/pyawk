@@ -24,7 +24,7 @@ from typing import IO, Sequence
 from . import __version__
 from .errors import AwkError
 from .parser import parse
-from .runtime import Interpreter
+from .runtime import Interpreter, run_with_big_stack
 
 USAGE = (
     "usage: pyawk [-F fs][-v var=value][-f progfile | 'prog'][file ...]\n"
@@ -136,7 +136,16 @@ def run(
     stdin: IO[bytes] | None = None,
 ) -> int:
     """Parse and run an AWK program (used by the CLI and in-process tests)."""
-    program = parse(source)
+    try:
+        program = parse(source)
+    except RecursionError:
+        # The parser calls itself once or more for each nesting level, e.g.
+        # about 15 times per parenthesis, so a program with ~65 nested
+        # parentheses already exceeds Python's default limit of 1000 calls.
+        # Such programs are rare, so rather than always paying for a helper
+        # thread we try again only now, with the big stack and high limit.
+        # If even that is not enough, the RecursionError reaches main().
+        program = run_with_big_stack(lambda: parse(source))
     # Non-fatal complaints found while parsing (e.g. a function called with
     # more arguments than it has parameters) go to stderr, then we run.
     for warning in program.warnings:
@@ -181,6 +190,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if hasattr(signal, "SIGPIPE"):  # not on Windows
             signal.signal(signal.SIGPIPE, signal.SIG_DFL)
             os.kill(os.getpid(), signal.SIGPIPE)
+        return 2
+    except RecursionError:
+        # Parsing or compiling a program nested too deeply even for the big
+        # stack (tens of thousands of levels); running it is caught inside
+        # the interpreter.  Report it like any other error, not as a trace.
+        sys.stdout.flush()
+        sys.stderr.write("pyawk: program is nested too deeply\n")
         return 2
     except KeyboardInterrupt:
         # 130 is the conventional status for "interrupted by Ctrl-C" (128 + 2).

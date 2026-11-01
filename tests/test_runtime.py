@@ -480,3 +480,47 @@ def test_ctrl_c_in_function_program_exits_130(loop: str) -> None:
     finally:
         proc.kill()
         proc.wait()
+
+
+# ------------------------------------------------- deeply nested programs
+# Parsing and compiling recurse once or more per nesting level, so very
+# deeply nested programs used to end in a Python traceback (RecursionError).
+# The reference awks run all of these (mawk rejects the ?: chain and the
+# 1000 parentheses with a syntax error, onetrue-awk the ?: chain and the
+# long sum; gawk runs them all).  (CodeRabbit v1.0, finding 4.)
+def _parens(n: int) -> str:
+    return "(" * n + "1" + ")" * n
+
+
+def _cond_chain(n: int) -> str:
+    return "".join(f"x == {i} ? {i} : " for i in range(n)) + "-1"
+
+
+NESTED_CASES = [
+    (f"BEGIN {{ print {_parens(70)} }}", "1"),
+    (f"BEGIN {{ print {_parens(1000)} }}", "1"),
+    ("BEGIN { print " + " + ".join(["1"] * 600) + " }", "600"),
+    ("BEGIN { print " + " + ".join(["1"] * 5000) + " }", "5000"),
+    (f"BEGIN {{ x = 1999; print {_cond_chain(2000)} }}", "1999"),
+    # with a function defined, the program already runs in the helper thread
+    (f"function f(v) {{ return v }} BEGIN {{ print f({_parens(1000)}) }}", "1"),
+]
+
+
+@pytest.mark.parametrize("prog,expected", NESTED_CASES, ids=range(len(NESTED_CASES)))
+def test_deeply_nested_programs_run(prog: str, expected: str) -> None:
+    assert awk(prog) == (expected + "\n", 0)
+
+
+def test_absurdly_nested_program_is_a_clean_error(tmp_path: Path) -> None:
+    # Too deep even for the big stack: a "pyawk:" message and status 2,
+    # never a Python traceback.  (The program is too long for a command-line
+    # argument, so it goes in a file for -f.)
+    prog = tmp_path / "deep.awk"
+    prog.write_text(f"BEGIN {{ print {_parens(100_000)} }}")
+    proc = subprocess.run(
+        [sys.executable, "-m", "pyawk", "-f", str(prog)], cwd=REPO, capture_output=True, text=True, timeout=120,
+    )
+    assert proc.returncode == 2
+    assert proc.stderr.startswith("pyawk: ")
+    assert "Traceback" not in proc.stderr

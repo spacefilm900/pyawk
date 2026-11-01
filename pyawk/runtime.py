@@ -563,19 +563,33 @@ class Interpreter:
         (The main thread's stack size is fixed when the process starts.)
         """
         if not self.program.functions:
-            return self._run()
+            try:
+                prog = self._compile()
+            except RecursionError:
+                # Compiling recurses about twice per level of a long chain
+                # such as ``1 + 1 + ... + 1``, so a few hundred terms exceed
+                # Python's default limit.  Compile (again) and run with the
+                # big stack; the compiled closures nest as deeply, so the
+                # program must run there too.
+                return run_with_big_stack(self._run)
+            return self._run(prog)
         return run_with_big_stack(self._run)
 
-    def _run(self) -> int:
+    def _compile(self) -> CompiledProgram:
+        # Compiling never fails: mistakes that AWK reports only when the
+        # code runs are compiled into code that raises then.  (It can run
+        # out of stack, though; see run.)
+        return Compiler(self).compile_program(self.program)
+
+    def _run(self, prog: CompiledProgram | None = None) -> int:
         """BEGIN, the main record loop, END; returns the exit status.
 
         ``exit`` in BEGIN or a rule skips the remaining input but still runs
         END; ``exit`` in END stops at once.  ``finally`` makes sure output
         files and pipes are closed however we leave.
         """
-        # Compiling never fails: mistakes that AWK reports only when the
-        # code runs are compiled into code that raises then.
-        prog = Compiler(self).compile_program(self.program)
+        if prog is None:
+            prog = self._compile()
         finished = False  # True once END is done with no error in flight
         try:
             try:
