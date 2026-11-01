@@ -449,7 +449,11 @@ class Interpreter:
         # uses $1, NF etc.  Many programs only look at $0, so this saves work.
         self.record = ""  # text of $0
         self.record_value: Value | None = None  # $0 as a strnum, made on demand
-        self.fields: list[Value] | None = None  # $1..$NF once split, else None
+        # $1..$NF once split, else None.  An entry stays None until that
+        # field is first read: deciding whether text looks like a number
+        # (make_strnum) costs time, and most programs read few fields.
+        self.fields: list[Value | None] | None = None
+        self.field_text: list[str] = []  # the split text behind ``fields``
         self.nf = 0  # valid only once fields is not None
         # FS in force when this record was read: POSIX says changing FS
         # affects the *next* record, so splitting later must use this value.
@@ -722,16 +726,30 @@ class Interpreter:
     def get_record_text(self) -> str:
         return self.record
 
-    def _split_record(self) -> list[Value]:
+    def _split_record(self) -> list[Value | None]:
         """Split $0 into fields if not done yet (lazy splitting); return them.
 
-        Every field is a strnum: it compares as a number if it looks like one.
+        Every field is a strnum: it compares as a number if it looks like
+        one.  That check is itself lazy: the list starts out full of None
+        and get_field classifies a field's text when it is first read.
         """
         if self.fields is None:
             pieces = self.split_with_fs(self.record, self.record_fs, paragraph=self.vars["RS"] == "")
-            self.fields = [make_strnum(p) for p in pieces]
-            self.nf = len(self.fields)
+            self.field_text = pieces
+            self.nf = len(pieces)
+            # ``[None] * n`` is a list of n None values.
+            self.fields = [None] * self.nf
         return self.fields
+
+    def _all_fields(self) -> list[Value]:
+        """The fields, every one classified: needed before changing them."""
+        fields = self._split_record()
+        if None in fields:
+            text = self.field_text
+            for i, v in enumerate(fields):
+                if v is None:
+                    fields[i] = make_strnum(text[i])
+        return fields  # type: ignore[return-value]  # no None left
 
     def split_with_fs(self, s: str, fs: str, paragraph: bool = False) -> list[str]:
         """Split s by the FS rules (also used by split()).
@@ -794,9 +812,14 @@ class Interpreter:
             return self.record_value
         if i < 0:
             raise AwkRuntimeError(f"trying to access out of range field {i}")
-        fields = self._split_record()
+        fields = self.fields
+        if fields is None:
+            fields = self._split_record()
         if i <= self.nf:
-            return fields[i - 1]  # Python lists count from 0, AWK fields from 1
+            v = fields[i - 1]  # Python lists count from 0, AWK fields from 1
+            if v is None:
+                v = fields[i - 1] = make_strnum(self.field_text[i - 1])
+            return v
         return ""
 
     def set_field(self, i: int, v: Value) -> None:
@@ -819,7 +842,7 @@ class Interpreter:
             return
         if i < 0:
             raise AwkRuntimeError(f"trying to access out of range field {i}")
-        fields = self._split_record()
+        fields = self._all_fields()
         while len(fields) < i:
             fields.append("")  # gap fields are empty strings (see get_field)
         fields[i - 1] = v
@@ -844,7 +867,7 @@ class Interpreter:
         n = int(to_num(v))
         if n < 0:
             raise AwkRuntimeError(f"NF set to negative value {n}")
-        fields = self._split_record()
+        fields = self._all_fields()
         del fields[n:]  # remove everything from index n to the end
         while len(fields) < n:
             fields.append("")  # new fields are empty strings (see get_field)
