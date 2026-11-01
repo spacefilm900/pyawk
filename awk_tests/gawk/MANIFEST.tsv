@@ -43,7 +43,7 @@ callparam	skip	error-message test: .ok is only gawk error text	local gawk reprod
 case-check	skip	custom rule: en_US.UTF-8 locale and alternative .ok files	
 childin	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok
 clobber	skip	custom rule: writes and compares a file	
-close_status	run		expected: majority (onetrue,gawk), not .ok; local gawk reproduces .ok
+close_status	skip	reference disagreement: close() of a command returns 0 in onetrue-awk and gawk --posix but the exit status in mawk and gawk (pyawk: exit status, see DESIGN.md)	expected: majority (onetrue,gawk), not .ok; local gawk reproduces .ok
 closebad	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok
 clsflnam	skip	gawk extension: special variable	local gawk reproduces .ok
 cmdlinefsbacknl	skip	shell-script test (cmdlinefsbacknl.sh)	
