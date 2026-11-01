@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Regenerate golden ``.out`` files by running the system awk (default mawk).
+
+usage: scripts/regen_golden.py [--awk /usr/bin/mawk] [--check] [CATEGORY/NAME ...]
+
+--check  compare the system awk against the existing .out files instead of
+         writing them (useful to spot reference-implementation drift).
+"""
+
+from __future__ import annotations
+
+import argparse
+import shlex
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "awk_tests"))
+import harness  # noqa: E402
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--awk", default="/usr/bin/mawk", help="reference awk command")
+    ap.add_argument("--check", action="store_true", help="only compare, do not write")
+    ap.add_argument("cases", nargs="*", help="limit to CATEGORY or CATEGORY/NAME")
+    opts = ap.parse_args()
+    awk = shlex.split(opts.awk)
+    selected = [c for c in harness.discover() if not opts.cases or c.id in opts.cases or c.category in opts.cases]
+    bad = 0
+    for case in selected:
+        proc = harness.run_case(case, awk)
+        if proc.returncode != 0:
+            print(f"WARN {case.id}: exit {proc.returncode}: {proc.stderr.strip()}")
+        if opts.check:
+            if proc.stdout != case.expected():
+                bad += 1
+                print(f"DIFF {case.id}")
+        else:
+            case.path(".out").write_text(proc.stdout, encoding="utf-8", errors="surrogateescape")
+    action = "checked" if opts.check else "regenerated"
+    print(f"{action} {len(selected)} cases with {opts.awk}" + (f", {bad} differ" if opts.check else ""))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

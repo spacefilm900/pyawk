@@ -1,0 +1,6 @@
+word: Hello
+digits: abc123
+space: with space
+digits: UPPER 42
+space: UPPER 42
+no lower: UPPER 42

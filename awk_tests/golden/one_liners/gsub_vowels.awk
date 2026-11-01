@@ -1,0 +1,1 @@
+{ gsub(/[aeiou]/, "#"); print }

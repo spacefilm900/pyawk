@@ -1,0 +1,4 @@
+root /bin/bash
+daemon /usr/sbin/nologin
+alice /bin/zsh
+bob /bin/bash
