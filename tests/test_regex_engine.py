@@ -233,6 +233,44 @@ def test_repetition_counts_above_32767_are_bad_regexes(ere: str) -> None:
         parse(ere)
 
 
+# A count with thousands of digits must still be a bad regex.  Python
+# refuses to convert a string of more than 4300 digits to an int (a guard
+# against slow conversions), so converting first would crash with a Python
+# ValueError instead (CodeRabbit, PR #1).  A regex can come from the input
+# ($0 ~ $1), so this is reachable.  Leading zeros do not make a count big.
+@pytest.mark.parametrize("ere", ["a{" + "9" * 5000 + "}", "a{1," + "9" * 5000 + "}", "a{" + "1" * 5000 + ",}"])
+def test_counts_with_thousands_of_digits_are_bad_regexes(ere: str) -> None:
+    with pytest.raises(AwkRuntimeError, match="bad regular expression.*repetition count"):
+        parse(ere)
+
+
+def test_unterminated_interval_with_thousands_of_digits_says_unterminated() -> None:
+    with pytest.raises(AwkRuntimeError, match="bad regular expression.*unterminated"):
+        parse("a{" + "9" * 5000)
+
+
+def test_leading_zeros_do_not_count_towards_the_limit() -> None:
+    parse("a{" + "0" * 5000 + "3}")
+    parse("a{0" + "0" * 10 + ",00032767}")
+
+
+def test_long_count_from_the_input_is_a_clean_error() -> None:
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    res = subprocess.run(
+        [sys.executable, "-m", "pyawk", "{ print ($0 ~ $1) }"],
+        input="a{" + "9" * 5000 + "}\n",
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parent.parent,
+    )
+    assert res.returncode == 2
+    assert "Traceback" not in res.stderr
+    assert "repetition count" in res.stderr
+
+
 # Nested intervals multiply: no single count is large, but the automaton
 # would be.  A pattern needing more than a million automaton states is
 # refused before anything is built (a deliberate difference: gawk and mawk

@@ -357,21 +357,33 @@ class _Parser:
             k += 1
         if k == j:
             return None
-        lo = int(s[j:k])
-        hi: int | None = lo
+        lo_digits = hi_digits = s[j:k]
         if k < len(s) and s[k] == ",":
             m = k + 1
             k = m
             while k < len(s) and s[k] in "0123456789":
                 k += 1
-            hi = int(s[m:k]) if k > m else None
+            hi_digits = s[m:k]  # empty for {n,}: no upper limit
         if k >= len(s) or s[k] != "}":
             raise self.error("unterminated interval {")
+        lo = self.count(lo_digits)
+        hi = self.count(hi_digits) if hi_digits else None
         if hi is not None and hi < lo:
             raise self.error("interval {n,m} with m < n")
-        if max(lo, hi or 0) > RE_DUP_MAX:
-            raise self.error(f"repetition count above {RE_DUP_MAX}")
         return lo, hi, k + 1
+
+    def count(self, digits: str) -> int:
+        """The number written by ``digits`` in an interval, at most RE_DUP_MAX.
+
+        The length is checked before converting: Python will not turn a
+        string of more than 4300 digits into an int (it raises ValueError
+        instead), and a count with more significant digits than RE_DUP_MAX
+        is too big anyway.  Leading zeros do not count.
+        """
+        digits = digits.lstrip("0") or "0"
+        if len(digits) > len(str(RE_DUP_MAX)) or int(digits) > RE_DUP_MAX:
+            raise self.error(f"repetition count above {RE_DUP_MAX}")
+        return int(digits)
 
     def escape(self) -> str:
         """The character meant by the escape at self.i (s[self.i] == '\\')."""
