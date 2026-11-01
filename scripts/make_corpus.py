@@ -261,6 +261,59 @@ add("functions", "extra_args", r'''function g(a) { return a * 2 }
 BEGIN { print g(1, x++), x }
 ''')
 
+# ---------------- range patterns (start, end)
+# "start" opens a range and "end" closes it; record 6 holds both words (a
+# range of one record) and the range opened on record 8 never closes.
+RANGES = "a\nstart\nx\nend\ny\nstart end\nz\nstart\nw\n"
+add("ranges", "regex_endpoints", r"""# Without an action a range prints its records.
+/start/, /end/
+""", RANGES)
+add("ranges", "expression_endpoints", r"""NR == 2, NR == 4 { print "nr", NR }
+$1 == "y", $2 == "end" { print "fields", NR, $0 }
+NR == 8, 0 { print "to eof", NR }
+""", RANGES)
+add("ranges", "restart_sections", r"""# Print each [section] of a config-like file, numbering the sections.
+/^\[/, /^$/ { if (/^\[/) n++; if (NF) print n ": " $0 }
+""", "junk\n[one]\na=1\nb=2\n\nmore junk\n[two]\nc=3\n\n[three]\nd=4\n")
+add("ranges", "independent_rules", r"""# Overlapping ranges, and two identical rules, each keep their own state.
+/start/, /end/ { print "A" NR }
+/x/, /y/       { print "B" NR }
+NR == 2, NR == 3 { print "C" NR }
+NR == 2, NR == 3 { print "D" NR }
+""", RANGES)
+add("ranges", "evaluation_order", r"""# s counts tests of the start condition, e tests of the end condition:
+# start is tested only while the range is closed, end only while it is open
+# (including on the record that opened it).
+(s++ >= 0 && $1 % 3 == 1), (e++ >= 0 && $1 % 3 == 0) { print $1 }
+END { print "start tested", s, "end tested", e }
+""", "1\n2\n3\n4\n5\n6\n7\n")
+add("ranges", "next_and_getline", r"""# Record 3 is skipped by next before the range rule sees it.  The end
+# condition is tested before the action runs, so next in the action on
+# record 4 ("end") does not keep the first range open.  In the second range,
+# getline on record 6 swallows record 7 ("z"), which is then never tested
+# as an end, so that range stays open to the end of the input.
+NR == 3 { print "skip", NR; next }
+/start/, /end/ { print "range", NR; if (NR == 4) next }
+/end/, /z/ { print "r2", NR; if ($0 == "start end") { getline; print "getline", NR, $0 } }
+{ print "rest", NR }
+""", RANGES)
+add("ranges", "across_files", r"""# Read the input twice (as two files): a range may continue from one input
+# file into the next.
+BEGIN { ARGV[2] = ARGV[1]; ARGC = 3 }
+FNR == 4, FNR == 2 { print (NR > FNR ? "second" : "first"), FNR }
+""", "1\n2\n3\n4\n5\n")
+add("ranges", "precedence_and_newline", r"""# The comma binds loosest: the whole || is the start condition.  A newline
+# may follow the comma, and ; separates pattern-only rules.
+$1 == "a" || $1 == "z", /x/ { print "or", NR }
+x = /start/, /end/ { print "assign", NR, x }
+$1 == "y" ? 1 : 0,
+/z/ { print "cond", NR }
+/w/, /w/; /a/
+""", RANGES)
+add("ranges", "exit_in_range", r"""NR == 2, NR == 4 { print; if (NR == 3) exit }
+END { print "end at", NR }
+""", "1\n2\n3\n4\n5\n")
+
 # ---------------- one-liners (from "The AWK Programming Language")
 add("one_liners", "count_lines", "END { print NR }\n", EMP)
 add("one_liners", "third_line", "NR == 3\n", EMP)

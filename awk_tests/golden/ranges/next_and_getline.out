@@ -1,0 +1,16 @@
+rest 1
+range 2
+rest 2
+skip 3
+range 4
+rest 5
+range 6
+r2 6
+getline 7 z
+rest 7
+range 8
+r2 8
+rest 8
+range 9
+r2 9
+rest 9

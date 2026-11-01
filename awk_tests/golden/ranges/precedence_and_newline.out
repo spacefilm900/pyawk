@@ -1,0 +1,20 @@
+or 1
+a
+or 2
+assign 2 1
+start
+or 3
+assign 3 1
+assign 4 1
+cond 5
+assign 6 1
+cond 6
+start end
+or 7
+cond 7
+or 8
+assign 8 1
+start
+or 9
+assign 9 1
+w
