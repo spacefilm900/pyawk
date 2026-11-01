@@ -29,6 +29,17 @@ test directory by scripts/import_gawk.py.  It uses everything above plus:
   gawk's test rules mostly run ``gawk -f T.awk < T.in``, so those cases
   have a ``.stdin`` file and an empty ``.operands`` file (no file names on
   the command line).  Without ``.stdin`` the program gets empty input.
+
+Two more files are available to every case (used by the ``environ``, ``io``
+and ``nextfile`` golden categories):
+
+* ``<name>.environ`` (optional): ``NAME=value`` lines added to the
+  environment the awk runs with, so ENVIRON tests see known values.
+* Golden cases (the categories under ``golden/``) run in a *throwaway copy*
+  of their category directory, made fresh for every run and deleted
+  afterwards.  A program may therefore create, append to and read back
+  files with relative names (``print > "out.txt"``) without touching the
+  repository, and every run starts from the same files.
 """
 
 # Treat type hints as text, so newer syntax such as ``list[str]`` is allowed.
@@ -36,15 +47,20 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 GOLDEN = ROOT / "golden"
 REPO = ROOT.parent
-CATEGORIES = ("basic", "fields", "patterns", "control", "arrays", "builtins", "functions", "ranges", "one_liners")
+CATEGORIES = (
+    "basic", "fields", "patterns", "control", "arrays", "builtins", "functions", "ranges", "one_liners",
+    "environ",
+)
 ONETRUE = ROOT / "onetrue"
 GAWK = ROOT / "gawk"
 # The imported suites (not under golden/), keyed by category name.
@@ -99,6 +115,19 @@ class Case:
     def command(self, awk: list[str]) -> list[str]:
         # ``[*a, *b, ...]`` builds one list from the items of a, then b, etc.
         return [*awk, *self.extra_args(), "-f", f"{self.name}.awk", *self.operands()]
+
+    def extra_env(self) -> dict[str, str]:
+        """Environment variables from ``<name>.environ`` (``NAME=value`` lines)."""
+        p = self.path(".environ")
+        if not p.exists():
+            return {}
+        pairs = (line.partition("=") for line in p.read_text().splitlines() if line.strip())
+        return {name: value for name, _, value in pairs}
+
+    @property
+    def sandboxed(self) -> bool:
+        """Golden cases run in a throwaway copy of their directory."""
+        return self.directory.parent == GOLDEN
 
     def expected(self) -> str:
         return self.path(".out").read_text(encoding="utf-8", errors="surrogateescape")
@@ -190,15 +219,36 @@ def run_case(case: Case, awk: list[str], timeout: float = 20.0) -> subprocess.Co
     PYTHONPATH lets ``python -m pyawk`` find the package without installing
     it; LC_ALL=C gives every awk the same, simple locale.  stdin is the
     case's ``.stdin`` data if it has one, and otherwise empty, so a program
-    that wrongly reads it cannot hang.
+    that wrongly reads it cannot hang.  ``.environ`` lines are added to the
+    environment.
+
+    Golden cases run in a throwaway copy of their category directory, so a
+    program that writes files (``print > "out.txt"``) cannot litter the
+    repository or see leftovers from an earlier run; the copy is deleted
+    afterwards.  Imported cases run in place, as their importers expect.
     """
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO) + os.pathsep + env.get("PYTHONPATH", "")
     env["LC_ALL"] = "C"
+    env.update(case.extra_env())
     data = case.stdin_data()
+    if not case.sandboxed:
+        return _run(case, awk, case.directory, env, data, timeout)
+    # ``with`` deletes the temporary directory (and anything the program
+    # wrote there) when the block ends, even if the run fails.
+    with tempfile.TemporaryDirectory(prefix="pyawk-golden-") as tmp:
+        work = Path(tmp) / case.category
+        shutil.copytree(case.directory, work)
+        return _run(case, awk, work, env, data, timeout)
+
+
+def _run(
+    case: Case, awk: list[str], cwd: Path, env: dict[str, str], data: str | None, timeout: float
+) -> subprocess.CompletedProcess[str]:
+    """The subprocess call behind run_case, in working directory ``cwd``."""
     return subprocess.run(
         case.command(awk),
-        cwd=case.directory,
+        cwd=cwd,
         capture_output=True,
         text=True,
         encoding="utf-8",

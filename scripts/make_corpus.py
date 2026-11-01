@@ -38,10 +38,21 @@ abc
 .5
 """
 
-# (category, name) -> (program, input, args); a dict keyed by a pair.
+# (category, name) -> (program, input, args, extras); a dict keyed by a pair.
+# ``extras`` maps a file extension to its content, for the optional files
+# described in awk_tests/harness.py: ".operands" (replaces the NAME.in
+# operand), ".stdin" (standard input) and ".environ" (NAME=value lines
+# added to the environment).
 cases = {}
-def add(cat, name, prog, inp="", args=""):
-    cases[(cat, name)] = (prog, inp, args)
+def add(cat, name, prog, inp="", args="", operands=None, stdin=None, environ=None):
+    extras = {}
+    if operands is not None:
+        extras[".operands"] = operands + "\n"
+    if stdin is not None:
+        extras[".stdin"] = stdin
+    if environ is not None:
+        extras[".environ"] = "".join(f"{k}={v}\n" for k, v in environ.items())
+    cases[(cat, name)] = (prog, inp, args, extras)
 
 # ---------------- basic
 add("basic", "print_all", "{ print }\n", EMP)
@@ -323,6 +334,80 @@ add("ranges", "exit_in_range", r"""NR == 2, NR == 4 { print; if (NR == 3) exit }
 END { print "end at", NR }
 """, "1\n2\n3\n4\n5\n")
 
+# ---------------- environ
+# Each case gets its own environment variables from NAME.environ, so the
+# values printed are known.  Names start with PYAWK_T_ to stay clear of
+# whatever the real environment holds.
+ENVV = {
+    "PYAWK_T_NUM": "12", "PYAWK_T_SPACED": " 3.5 ", "PYAWK_T_EXP": "1e3",
+    "PYAWK_T_SIGN": "+5", "PYAWK_T_HEX": "0x1A", "PYAWK_T_STR": "abc",
+    "PYAWK_T_EMPTY": "", "PYAWK_T_ESC": "a\\tb", "PYAWK_T_PREFIX": "10x",
+}
+add("environ", "values", r"""# ENVIRON values are the exact text of each variable: no escape
+# processing (\t stays two characters) and no trimming.
+BEGIN {
+	print "[" ENVIRON["PYAWK_T_NUM"] "]", "[" ENVIRON["PYAWK_T_SPACED"] "]"
+	print "[" ENVIRON["PYAWK_T_ESC"] "]", length(ENVIRON["PYAWK_T_ESC"])
+	print "[" ENVIRON["PYAWK_T_EMPTY"] "]", ("PYAWK_T_EMPTY" in ENVIRON)
+	print ("PYAWK_T_MISSING" in ENVIRON), "[" ENVIRON["PYAWK_T_MISSING"] "]"
+	# Referencing a missing element creates it, as for any array.
+	print ("PYAWK_T_MISSING" in ENVIRON)
+}
+""", environ=ENVV)
+add("environ", "strnum", r"""# Values that look like numbers are numeric strings (strnums): they
+# compare as numbers.  Others compare as strings.
+BEGIN {
+	print "12 < 9:", (ENVIRON["PYAWK_T_NUM"] < 9)            # numeric: 0
+	print "spaced == 3.5:", (ENVIRON["PYAWK_T_SPACED"] == 3.5)
+	print "1e3 == 1000:", (ENVIRON["PYAWK_T_EXP"] == 1000)
+	print "+5 == 5:", (ENVIRON["PYAWK_T_SIGN"] == 5)
+	print "0x1A == 26:", (ENVIRON["PYAWK_T_HEX"] == 26)      # not hex: 0
+	print "abc < 1:", (ENVIRON["PYAWK_T_STR"] < 1)           # string compare
+	print "empty == 0:", (ENVIRON["PYAWK_T_EMPTY"] == 0)     # "" is not numeric
+	print "10x == 10:", (ENVIRON["PYAWK_T_PREFIX"] == 10)    # string compare: 0
+	print "10x + 0:", ENVIRON["PYAWK_T_PREFIX"] + 0          # but converts to 10
+	print "sum:", ENVIRON["PYAWK_T_NUM"] + ENVIRON["PYAWK_T_SPACED"]
+}
+""", environ=ENVV)
+add("environ", "array_ops", r"""# ENVIRON is an ordinary array: in, for-in, delete, element
+# assignment and passing to a function all work.
+function show(env, name) { return name "=" env[name] }
+BEGIN {
+	n = 0
+	for (k in ENVIRON)
+		if (k ~ /^PYAWK_T_/) n++
+	print "test variables:", n
+	ENVIRON["PYAWK_T_NUM"]++
+	print show(ENVIRON, "PYAWK_T_NUM")
+	delete ENVIRON["PYAWK_T_STR"]
+	print ("PYAWK_T_STR" in ENVIRON)
+	ENVIRON["PYAWK_T_NEW"] = "added"
+	print show(ENVIRON, "PYAWK_T_NEW")
+	m = split(ENVIRON["PYAWK_T_SPACED"], parts, ".")
+	print m, parts[1] "|" parts[2]
+}
+""", environ=ENVV)
+add("environ", "child_processes", r"""# Changing ENVIRON does not change the environment of commands that
+# awk runs: system(), "cmd" | getline and print | "cmd" all still see the
+# original values (onetrue-awk, gawk --posix and mawk agree).
+BEGIN {
+	ENVIRON["PYAWK_T_NUM"] = "changed"
+	ENVIRON["PYAWK_T_NEW"] = "new"
+	delete ENVIRON["PYAWK_T_STR"]
+	system("echo system: $PYAWK_T_NUM $PYAWK_T_STR [$PYAWK_T_NEW]")
+	"echo getline: $PYAWK_T_NUM $PYAWK_T_STR [$PYAWK_T_NEW]" | getline line
+	print line
+	print "x" | "echo pipe: $PYAWK_T_NUM $PYAWK_T_STR [$PYAWK_T_NEW]; cat >/dev/null"
+	close("echo pipe: $PYAWK_T_NUM $PYAWK_T_STR [$PYAWK_T_NEW]; cat >/dev/null")
+	print "awk sees:", ENVIRON["PYAWK_T_NUM"], ENVIRON["PYAWK_T_NEW"]
+}
+""", environ=ENVV)
+add("environ", "main_rules", r"""# ENVIRON is set before BEGIN and usable anywhere, e.g. to pass a
+# threshold into a pattern.
+$2 > ENVIRON["PYAWK_T_NUM"] { print $1, "over" }
+END { print "limit", ENVIRON["PYAWK_T_NUM"] + 0 }
+""", "a 5\nb 12\nc 13\nd 100\ne 9\n", environ=ENVV)
+
 # ---------------- one-liners (from "The AWK Programming Language")
 add("one_liners", "count_lines", "END { print NR }\n", EMP)
 add("one_liners", "third_line", "NR == 3\n", EMP)
@@ -342,7 +427,7 @@ add("one_liners", "swap_fields", '{ temp = $1; $1 = $2; $2 = temp; print }\n', E
 add("one_liners", "nonempty_lines", "NF\n", TEXT)
 
 # .items() yields (key, value) pairs; both are tuples, unpacked in one go.
-for (cat, name), (prog, inp, args) in cases.items():
+for (cat, name), (prog, inp, args, extras) in cases.items():
     d = os.path.join(ROOT, cat)
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, name + ".awk"), "w") as f:
@@ -352,4 +437,7 @@ for (cat, name), (prog, inp, args) in cases.items():
     if args:
         with open(os.path.join(d, name + ".args"), "w") as f:
             f.write(args + "\n")
+    for ext, content in extras.items():
+        with open(os.path.join(d, name + ext), "w") as f:
+            f.write(content)
 print(len(cases), "cases")
