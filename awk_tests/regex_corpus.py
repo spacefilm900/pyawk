@@ -21,7 +21,8 @@ The corpus has two parts:
 
 * ``CURATED``: hand-picked patterns, grouped by category (alternation,
   nesting, quantifiers, intervals, brackets, classes, anchors, escapes,
-  empty alternatives), each with inputs chosen to exercise it;
+  backtracking-prone ("pathological") patterns, empty alternatives), each
+  with inputs chosen to exercise it;
 * ``random_patterns``: small EREs built by a seeded random generator over
   the alphabet {a, b, c}, so the same seed always gives the same corpus.
 """
@@ -62,6 +63,14 @@ _WORDS = ("", "a", "ab", "abc", "abcd", "xabcdx", "aXbXc", "foobar", "foo bar", 
 _BRACKET_INPUTS = (
     "", "a", "b", "z", "A", "-", "]", "[", "^", "\\", "\t", " ", ".", "*", "0", "9", "_", "a-z", "]a[",
     "x^y", "q\\n", "=", ":", "ab]", "!", "~", "{", "|",
+)
+# Long lines of one or two repeated characters: on these, a backtracking
+# matcher given nested or overlapping repetition tries exponentially many
+# ways to fail (tests/test_regex_backtracking.py checks the time taken).
+_PATHOLOGICAL_INPUTS = (
+    "", "a" * 30, "a" * 30 + "b", "a" * 40 + "!", "a" * 25, "a" * 50, "a" * 35 + "c", "abcdefghij" * 4,
+    "abcdefghij" * 3 + "5", "x" * 40, "x" * 39 + "y", "ab" * 20, "ab" * 20 + "c", "abc" * 13, "abc" * 13 + "x",
+    "x" + "y" * 30, "5" * 40, "5" * 40 + ".", "a" * 20 + "b" * 20 + "a",
 )
 _ESC_INPUTS = ("", "a.b", "axb", "a/b", 'a"b', "a\tb", "a\\b", "a+b", "a*b", "a$b", "a^b", "(a)", "[a]",
                "{a}", "a?b", "a|b", "ab", "nn", "tt", "a\\.b")
@@ -114,6 +123,11 @@ CURATED: list[Entry] = [
         "\\(a\\)", "\\[a\\]", "\\{a\\}", "a\\?b", "a\\|b", "\\n", "\\t", "a\\.\\b", "\\a", "\\y",
         "\\B", "\\w", "\\s", "\\d", "\\q", "\\141", "\\x41", "a\\b", "\\.",
     ], _ESC_INPUTS),
+    *_c("pathological", [
+        "(a*)*b", "(a|a)*b", "(a+)+b", "(a|aa)+$", "([a-z]+)*[0-9]", "(a|aa)*c", "(x+x+)+y", "^(a+)+$",
+        "(.*)*x", "(a*b*)*c", "((a|b)*b)*c", "(a?){25}a{25}", ".*x.*y", "a*a*b", "(a|b)*a(a|b){10}",
+        "[0-9]+5\\.", "x.*y.*z", "(ab|a)*c", "(a|ab)(c|bcd)*x",
+    ], _PATHOLOGICAL_INPUTS),
     *_c("empty", [
         "(a|)b", "(|a)b", "a||b", "a|", "|a", "(|)", "()", "()a", "a()", "(a|b|)", "(|a|b)+", "a(|b)c",
     ], ABC_INPUTS + ("ac", "abc")),
