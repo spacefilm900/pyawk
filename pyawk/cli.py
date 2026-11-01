@@ -135,6 +135,10 @@ def run(
 ) -> int:
     """Parse and run an AWK program (used by the CLI and in-process tests)."""
     program = parse(source)
+    # Non-fatal complaints found while parsing (e.g. a function called with
+    # more arguments than it has parameters) go to stderr, then we run.
+    for warning in program.warnings:
+        sys.stderr.write(f"pyawk: warning: {warning}\n")
     interp = Interpreter(program, operands, assignments, stdout=stdout, stdin=stdin)
     return interp.run()
 

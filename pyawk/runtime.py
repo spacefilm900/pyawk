@@ -36,6 +36,7 @@ import random
 import re
 import subprocess
 import sys
+import threading
 from typing import IO, Any, Callable, Iterable
 
 from . import ast
@@ -92,6 +93,60 @@ class ExitEx(Exception):
     def __init__(self, code: int) -> None:
         super().__init__(code)
         self.code = code
+
+
+class _ReturnEx(Exception):
+    """Raised by ``return [value]``; caught by the function call that is returning."""
+
+    def __init__(self, value: Value) -> None:
+        super().__init__()
+        self.value = value
+
+
+# ---------------------------------------------------------------- functions
+# How many Python stack frames we allow.  Each level of AWK function call
+# uses roughly a dozen nested Python calls (call -> block -> statement ->
+# expression -> ... -> call), and Python's default limit of 1000 would stop
+# recursion after ~80 AWK levels.  This allows AWK recursion depths of
+# well over 10000 (as gawk and mawk manage); deeper runaway recursion is
+# reported as an error rather than crashing.
+RECURSION_LIMIT = 400_000
+# Running out of the *operating-system* stack would crash Python outright,
+# so the interpreter runs in a thread with a stack this large (bytes).
+THREAD_STACK_SIZE = 1 << 30
+
+
+class Cell:
+    """One local variable of a running function call (a parameter).
+
+    AWK variables are untyped until first used, and a parameter can turn
+    out to be a scalar or an array depending on how the function body uses
+    it.  So a cell has three slots, at most one of which is "active":
+
+    * ``value``: the scalar value, once it is known to be a scalar.
+    * ``array``: the Python dict holding the elements, once it is known to
+      be an array.  Arrays are passed *by reference*: the caller's dict
+      itself is put here, so changes are visible to the caller.
+    * ``link``: for a parameter whose argument was an *untyped* variable of
+      the caller (never used yet).  If the callee uses the parameter as an
+      array, the caller's variable must become that same array; ``link``
+      remembers where to create it: the caller's own Cell, or the name of a
+      global variable (a ``str``).
+
+    ``__slots__`` fixes the attribute names (smaller, faster objects).
+    """
+
+    __slots__ = ("value", "array", "link")
+
+    def __init__(
+        self,
+        value: Value | None = None,
+        array: dict[str, Value] | None = None,
+        link: "Cell | str | None" = None,
+    ) -> None:
+        self.value = value
+        self.array = array
+        self.link = link
 
 
 # ---------------------------------------------------------------- input
@@ -359,6 +414,12 @@ class Interpreter:
         argv0: str = "awk",
     ) -> None:
         self.program = program
+        # The local variables of the function call now running, as a dict
+        # from parameter name to Cell; None when no function is running.
+        # Each call makes a new dict and puts the caller's back on return,
+        # so this is in effect a stack of call frames.  Names not in the
+        # frame are global (self.vars / self.arrays).
+        self.frame: dict[str, Cell] | None = None
         # ``a if cond else b`` is Python's conditional expression (C's ?:).
         self.out: IO[str] = stdout if stdout is not None else sys.stdout
         self.io = IOManager(self.out, stdin if stdin is not None else sys.stdin.buffer)
@@ -403,6 +464,7 @@ class Interpreter:
         self.rng = random.Random(0)
         self.exit_code = 0
 
+
         # Dispatch tables: map each node class to the method that handles it.
         # ``eval`` looks up ``type(node)`` here instead of a long chain of
         # ``if isinstance(...)`` tests.  ``self._num`` etc. are "bound
@@ -415,6 +477,7 @@ class Interpreter:
             ast.Compare: self._compare, ast.Concat: self._concat,
             ast.Binary: self._binary, ast.Unary: self._unary,
             ast.IncDec: self._incdec, ast.Call: self._call,
+            ast.UserCall: self._user_call,
             ast.Getline: self._getline, ast.Group: self._group,
         }
         self._exec: dict[type, Callable[[Any], None]] = {
@@ -424,10 +487,50 @@ class Interpreter:
             ast.ForIn: self._for_in, ast.Break: self._break,
             ast.Continue: self._continue, ast.Next: self._next,
             ast.Exit: self._exit, ast.Delete: self._delete,
+            ast.Return: self._return,
         }
 
     # ------------------------------------------------------------ top level
     def run(self) -> int:
+        """Run the program (see _run) with room for deep recursion.
+
+        Deeply recursive AWK functions need a deep Python stack, so when
+        the program defines functions we raise Python's recursion limit
+        and run in a helper thread whose stack is large enough for it.
+        (The main thread's stack size is fixed when the process starts.)
+        """
+        if not self.program.functions:
+            return self._run()
+        # A one-element list lets the thread hand back its result (or the
+        # exception it raised), since a thread cannot return a value.
+        result: list[Any] = []
+
+        def target() -> None:
+            try:
+                result.append(self._run())
+            except BaseException as exc:  # re-raised in this thread below
+                result.append(exc)
+
+        old_limit = sys.getrecursionlimit()
+        try:
+            old_size = threading.stack_size(THREAD_STACK_SIZE)
+        except (ValueError, RuntimeError):
+            # This platform will not give us a big stack: run normally,
+            # with Python's usual (shallow, but safe) recursion limit.
+            return self._run()
+        sys.setrecursionlimit(max(old_limit, RECURSION_LIMIT))
+        try:
+            thread = threading.Thread(target=target)
+            thread.start()
+            thread.join()
+        finally:
+            threading.stack_size(old_size)
+            sys.setrecursionlimit(old_limit)
+        if isinstance(result[0], BaseException):
+            raise result[0]
+        return result[0]
+
+    def _run(self) -> int:
         """BEGIN, the main record loop, END; returns the exit status.
 
         ``exit`` in BEGIN or a rule skips the remaining input but still runs
@@ -454,6 +557,9 @@ class Interpreter:
             raise AwkRuntimeError("next used in BEGIN or END action") from None
         except (_BreakEx, _ContinueEx):
             raise AwkRuntimeError("break or continue outside a loop") from None
+        except RecursionError:
+            self.frame = None
+            raise AwkRuntimeError("function call nesting too deep (runaway recursion?)") from None
         finally:
             try:
                 self.io.close_all()
@@ -701,18 +807,43 @@ class Interpreter:
         self._rebuild_record()
 
     # ------------------------------------------------------------ variables
+    #
+    # Inside a function call, a name is first looked up among the call's
+    # local variables (self.frame, see Cell); otherwise it is global.
+    # A variable's first use decides whether it is a scalar or an array,
+    # and using it the other way afterwards is an error.
     def get_var(self, name: str) -> Value:
         """Scalar variable.  NF is special: it is computed from the fields."""
+        frame = self.frame
+        if frame is not None and name in frame:
+            cell = frame[name]
+            if cell.array is not None:
+                raise AwkRuntimeError(f"can't use array {name} in scalar context")
+            if cell.value is None:
+                # First use, as a scalar: from now on it is one.
+                cell.value = UNINIT
+                cell.link = None
+            return cell.value
         if name == "NF":
             return self.get_nf()
         v = self.vars.get(name)
         if v is None:
             if name in self.arrays:
                 raise AwkRuntimeError(f"can't use array {name} in scalar context")
-            return UNINIT
+            # Reading an unset variable makes it a scalar (it can no longer
+            # become an array), as in all three reference awks.
+            self.vars[name] = v = UNINIT
         return v
 
     def set_var(self, name: str, v: Value) -> None:
+        frame = self.frame
+        if frame is not None and name in frame:
+            cell = frame[name]
+            if cell.array is not None:
+                raise AwkRuntimeError(f"can't assign to {name}; it's an array name")
+            cell.value = v
+            cell.link = None  # a scalar now; the caller's variable is unaffected
+            return
         if name == "NF":
             self.set_nf(v)
             return
@@ -721,12 +852,62 @@ class Interpreter:
         self.vars[name] = v
 
     def get_array(self, name: str) -> dict[str, Value]:
+        frame = self.frame
+        if frame is not None and name in frame:
+            return self._cell_array(frame[name], name)
+        return self._global_array(name)
+
+    def _global_array(self, name: str) -> dict[str, Value]:
         arr = self.arrays.get(name)
         if arr is None:
-            if name in self.vars:
+            if name in self.vars or name == "NF":
                 raise AwkRuntimeError(f"can't use scalar {name} as array")
             arr = self.arrays[name] = {}  # first use creates an empty array
         return arr
+
+    def _cell_array(self, cell: Cell, name: str) -> dict[str, Value]:
+        """The array a local variable holds, creating it on first use.
+
+        If the cell is linked to an untyped variable of a caller, the array
+        is created *there* (following the chain of links) and shared, so
+        ``function f(a) { a[1] = 7 }  BEGIN { f(x); print x[1] }`` prints 7.
+        """
+        if cell.array is not None:
+            return cell.array
+        if cell.value is not None:
+            raise AwkRuntimeError(f"can't use scalar {name} as array")
+        link = cell.link
+        if link is None:
+            arr: dict[str, Value] = {}
+        elif isinstance(link, Cell):
+            arr = self._cell_array(link, name)
+        else:
+            arr = self._global_array(link)
+        cell.array = arr
+        cell.link = None
+        return arr
+
+    def var_kind(self, name: str) -> str:
+        """"array", "scalar" or "untyped", *without* deciding the type
+        (``length(x)`` must not turn an unused x into a scalar)."""
+        frame = self.frame
+        if frame is not None and name in frame:
+            cell: Cell | str | None = frame[name]
+            # Follow links until we reach a cell that knows, or a global.
+            while isinstance(cell, Cell):
+                if cell.array is not None:
+                    return "array"
+                if cell.value is not None:
+                    return "scalar"
+                cell = cell.link
+            if cell is None:
+                return "untyped"
+            name = cell
+        if name in self.arrays:
+            return "array"
+        if name in self.vars or name == "NF":
+            return "scalar"
+        return "untyped"
 
     def subscript(self, subs: list[ast.Expr]) -> str:
         """The string key for ``arr[i]`` or ``arr[i, j]`` (joined with SUBSEP)."""
@@ -901,6 +1082,76 @@ class Interpreter:
     def _call(self, node: ast.Call) -> Value:
         # Builtins receive the argument *nodes*, not values (see builtins.py).
         return BUILTINS[node.name](self, node.args)
+
+    def _user_call(self, node: ast.UserCall) -> Value:
+        """Call a user-defined function.
+
+        1. Evaluate the arguments left to right, in the *caller's* frame,
+           binding each to the matching parameter (see _bind_arg).  Extra
+           arguments are evaluated (for their side effects) and dropped;
+           the parser already warned about them.
+        2. Parameters with no argument are the function's local variables:
+           fresh, untyped cells.
+        3. Run the body with the new frame; ``return`` raises _ReturnEx
+           carrying the value.  Falling off the end returns "uninitialized".
+        4. Put the caller's frame back, however the body was left (return,
+           exit, error): that is what ``finally`` guarantees.
+        """
+        fn = self.program.functions.get(node.name)
+        if fn is None:
+            # Not a parse error: AWK only complains if the call happens.
+            raise AwkRuntimeError(f"calling undefined function {node.name}")
+        params = fn.params
+        frame: dict[str, Cell] = {}
+        for i, arg in enumerate(node.args):
+            if i < len(params):
+                frame[params[i]] = self._bind_arg(arg)
+            else:
+                self.eval(arg)
+        for p in params[len(node.args):]:
+            frame[p] = Cell()
+        saved = self.frame
+        self.frame = frame
+        try:
+            self._block(fn.body)
+        except _ReturnEx as r:
+            return r.value
+        finally:
+            self.frame = saved
+        return UNINIT
+
+    def _bind_arg(self, arg: ast.Expr) -> Cell:
+        """Make the callee's Cell for one argument.
+
+        Scalars are passed by value: the cell gets a copy of the value.
+        (Python strings and floats cannot be changed in place, so sharing
+        the value object is as good as a copy.)  A bare variable name is
+        special, because it may name an array (passed by reference: the
+        cell shares the very same dict) or an untyped variable (the cell is
+        linked to it, so that it can still become an array; see Cell).
+        """
+        if type(arg) is ast.Var:
+            name = arg.name  # type: ignore[attr-defined]
+            frame = self.frame
+            if frame is not None and name in frame:
+                c = frame[name]
+                if c.array is not None:
+                    return Cell(array=c.array)
+                if c.value is not None:
+                    return Cell(value=c.value)
+                return Cell(link=c)  # an untyped local of the caller
+            if name in self.arrays:
+                return Cell(array=self.arrays[name])
+            if name in self.vars or name == "NF":
+                return Cell(value=self.get_var(name))
+            return Cell(link=name)  # an untyped global
+        return Cell(value=self.eval(arg))
+
+    def _return(self, node: ast.Return) -> None:
+        # Evaluating ``return arr`` for an array fails in get_var, as it
+        # should: functions can only return scalars.
+        value = UNINIT if node.value is None else self.eval(node.value)
+        raise _ReturnEx(value)
 
     def _getline(self, node: ast.Getline) -> Value:
         """The getline forms; returns 1 (got a record), 0 (end) or -1 (error).

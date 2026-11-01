@@ -266,8 +266,15 @@ def _length(it: "Interpreter", args: list[ast.Expr]) -> Value:
     if not args:
         return float(len(it.get_record_text()))
     a = args[0]
-    if isinstance(a, ast.Var) and a.name in it.arrays:
-        return float(len(it.arrays[a.name]))
+    if isinstance(a, ast.Var):
+        # A bare name may be an array (count its elements) or a variable
+        # never used yet: length 0, and it stays untyped, so it may still
+        # become an array later (onetrue-awk and mawk; gawk disagrees).
+        kind = it.var_kind(a.name)
+        if kind == "array":
+            return float(len(it.get_array(a.name)))
+        if kind == "untyped":
+            return 0.0
     return float(len(it.str_of(it.eval(a))))
 
 
