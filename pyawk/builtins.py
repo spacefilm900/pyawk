@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Callable
 
 from . import ast
 from .errors import AwkRuntimeError
+from .regex import LONG_TEXT, for_long
 from .values import UNINIT, StrNum, Value, make_strnum, special_float_str, to_num, to_str
 
 # ``TYPE_CHECKING`` is False when the program runs; the import below is only
@@ -452,6 +453,8 @@ def substitute(pattern: "re.Pattern[str] | LongestPattern", repl: str, s: str, g
     So ``gsub(/x*/, "-", "abxd")`` gives ``-a-b-d-``.  (Python's re.sub
     differs here: it gives ``-a-b--d-``.)
     """
+    if len(s) > LONG_TEXT:
+        pattern = for_long(pattern)  # Python's search could be quadratic here
     if _never_matches_empty(pattern):
         return pattern.subn(_template(repl), s, 0 if global_ else 1)
     parts = expand_replacement(repl)
@@ -690,7 +693,10 @@ def _match(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 
     def match() -> Value:
         text = s()
-        m = pattern().search(text)
+        p = pattern()
+        if len(text) > LONG_TEXT:
+            p = for_long(p)  # Python's search could be quadratic here
+        m = p.search(text)
         if m is None:
             start, length = 0.0, -1.0
         else:

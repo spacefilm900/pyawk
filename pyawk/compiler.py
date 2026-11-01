@@ -74,7 +74,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from . import ast
 from .builtins import BUILTINS, format_printf
 from .errors import AwkRuntimeError
-from .regex import LongestPattern, compile_span
+from .regex import LongestPattern, compile_span, matcher
 from .regex import compile_ere as _compile_test
 from .values import UNINIT, StrNum, Value, make_strnum, num_to_str, to_num, to_str
 
@@ -625,8 +625,11 @@ class Compiler:
         t = type(node)
         if t is ast.Regex:
             # A bare /regex/ as a condition means ``$0 ~ /regex/``.
-            pat, it = self.regex(node), self.it
-            return lambda: pat().search(it.record) is not None
+            it = self.it
+            static, dynamic = self.tester(node)
+            if static is not None:
+                return lambda: static(it.record) is not None
+            return lambda: dynamic()(it.record) is not None
         if t is ast.Compare:
             return self._compare(node)  # type: ignore[arg-type]
         if t is ast.And:
@@ -726,10 +729,16 @@ class Compiler:
         return compare
 
     def _match(self, node: ast.Match) -> CondFn:
-        left, pat = self.string(node.left), self.regex(node.regex)
+        left = self.string(node.left)
+        static, dynamic = self.tester(node.regex)
+        # The regex operand is evaluated before the left one, as before.
+        if static is not None:
+            if node.negate:
+                return lambda: static(left()) is None
+            return lambda: static(left()) is not None
         if node.negate:
-            return lambda: pat().search(left()) is None
-        return lambda: pat().search(left()) is not None
+            return lambda: dynamic()(left()) is None
+        return lambda: dynamic()(left()) is not None
 
     def _in(self, node: ast.In) -> CondFn:
         # ``(k in arr)`` tests membership without creating the element.
@@ -741,6 +750,35 @@ class Compiler:
             return k in arr()
 
         return in_
+
+    def tester(self, node: ast.Expr) -> tuple[Callable[[str], object] | None, Callable[[], Callable[[str], object]]]:
+        """Compile the right side of ``~`` (or a bare /regex/ condition).
+
+        The result is used as ``test(text) is not None``.  For a /literal/
+        that is ``(test, ...)``, with ``test`` fixed now: regex.matcher picks
+        Python's search or the automaton (see regex.py, "backtracking
+        check").  Otherwise ``(None, get)``: ``get()`` evaluates the regex
+        expression and returns the test for it, remembering the last one.
+        """
+        if type(node) is ast.Regex:
+            try:
+                test = matcher(_compile_test(node.source))  # type: ignore[attr-defined]
+                return test, lambda: test
+            except AwkRuntimeError:
+                pass  # a bad regex is reported when it is used, not before
+        pat = self.regex(node)
+        last_pattern: object = None
+        last_test: Callable[[str], object] | None = None
+
+        def get() -> Callable[[str], object]:
+            nonlocal last_pattern, last_test
+            p = pat()
+            if p is not last_pattern:
+                last_test = matcher(p)
+                last_pattern = p
+            return last_test  # type: ignore[return-value]
+
+        return None, get
 
     def regex(self, node: ast.Expr, span: bool = False) -> Callable[[], "re.Pattern[str] | LongestPattern"]:
         """A closure giving the compiled regex for a match operand.

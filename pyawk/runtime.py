@@ -46,7 +46,7 @@ from . import ast
 from .compiler import NEXT, NEXTFILE, CompiledProgram, Compiler
 from .errors import AwkRuntimeError
 from .lexer import process_escapes
-from .regex import LongestPattern, compile_span
+from .regex import LONG_TEXT, LongestPattern, compile_span, for_long
 from .values import UNINIT, StrNum, Value, make_strnum, num_to_str, to_num, to_str
 
 # Input bytes that are not valid UTF-8 are carried through unchanged
@@ -290,6 +290,11 @@ class RecordReader:
         if self.start >= len(self.buf):
             return None
         pat = compile_span(rs)
+        if len(self.buf) - self.start > LONG_TEXT:
+            # Avoid Python's quadratic worst case (see regex.py); the
+            # automaton marks every match start in one pass over the buffer,
+            # shared by all the records read from it.
+            pat = for_long(pat)
         pos = self.start
         while True:
             m = pat.search(self.buf, pos)
@@ -876,6 +881,8 @@ class Interpreter:
         """Split s at each non-empty match of pat."""
         pieces: list[str] = []
         pos = 0
+        if len(s) > LONG_TEXT:
+            pat = for_long(pat)  # Python's search could be quadratic here
         for m in pat.finditer(s):
             if m.end() == m.start():
                 continue
