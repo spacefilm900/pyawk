@@ -161,6 +161,32 @@ def test_regex_dollar_does_not_match_before_newline() -> None:
     assert compile_ere("a.b").search("a\nb") is not None
 
 
+# Stacked repetition operators keep their ERE meaning: ``a+?`` is
+# ``(a+)?``, not Python's "lazy" ``+?``, and ``a++`` is ``(a+)+``, not
+# Python 3.11's "possessive" ``++``.  Expected values are what mawk and
+# onetrue-awk print (gawk --posix agrees on the first, fourth and later
+# ones; for ``+?``, ``*?`` and ``??`` it gives the lazy answer, so the
+# majority rule picks mawk and onetrue-awk).  (CodeRabbit v1.0, finding 2.)
+STACKED_REPEAT_CASES = [
+    ('"aaa" ~ /a++a/', "1"),
+    ('match("aaa", /a+?/) " " RLENGTH', "1 3"),
+    ('match("aaa", /a*?/) " " RLENGTH', "1 3"),
+    ('match("baaa", /ba?+/) " " RLENGTH', "1 4"),
+    ('match("baaa", /ba??/) " " RLENGTH', "1 2"),
+    ('match("baaa", /ba?*/) " " RLENGTH', "1 4"),
+    ('match("baaa", /ba+*/) " " RLENGTH', "1 4"),
+    ('match("xaab", /(a)+?b/) " " RLENGTH', "2 3"),
+    ('match("aaa", "a+?") " " RLENGTH', "1 3"),  # dynamic regex too
+    ('match("ab+?c", /b[+?]/) " " RLENGTH', "2 2"),  # inside brackets: literal
+    ('match("a+?b", /a\\+\\?b/) " " RLENGTH', "1 4"),  # escaped: literal
+]
+
+
+@pytest.mark.parametrize("expr,expected", STACKED_REPEAT_CASES)
+def test_stacked_repetition_operators(expr: str, expected: str) -> None:
+    assert awk(f"BEGIN {{ print {expr} }}")[0] == expected + "\n"
+
+
 def test_cli_options(tmp_path: Path) -> None:
     prog = tmp_path / "p.awk"
     prog.write_text("{ print $2 }\n")

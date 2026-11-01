@@ -19,8 +19,14 @@ Differences handled:
   word boundary), octal ``\\ddd``; unknown escapes of letters become the
   literal letter.
 
+* Stacked repeat operators (``a+?``, ``a++``, ``a?*``) keep their ERE
+  meaning (see ``_repeat_run``) instead of Python's lazy or possessive one.
+
 Known gap: Python picks the *first* alternative that matches, while POSIX
 wants the *longest* match, so ``a|ab`` matches only "a" in "ab" here.
+Also, an operator after an interval (``a{2}+``) still gets Python's
+possessive or lazy meaning; the reference awks disagree among themselves
+on that case.
 """
 
 # Treat type hints as text, so newer syntax such as ``tuple[str, int]`` is allowed.
@@ -103,13 +109,43 @@ def translate(ere: str) -> str:
             # anchor itself (onetrue-awk and gawk; mawk rejects it, and
             # Python says "nothing to repeat").  ``^+`` is just ``^``;
             # ``^*`` and ``^?`` make the anchor optional, so both vanish.
-            if ere[i + 1] == "+":
+            op, i = _repeat_run(ere, i + 1)
+            if op == "+":
                 out.append("^")
-            i += 2
+        elif c in "+*?":
+            op, i = _repeat_run(ere, i)
+            out.append(op)
         else:
             out.append(c)
             i += 1
     return "".join(out)
+
+
+def _repeat_run(s: str, i: int) -> tuple[str, int]:
+    """Collapse a run of repeat operators starting at s[i]; return (op, next_i).
+
+    In an ERE each operator repeats everything before it, so ``a+?`` means
+    ``(a+)?`` and ``a++`` means ``(a+)+``.  Python reads the same text
+    differently: ``+?``, ``*?`` and ``??`` are "lazy" (match as little as
+    possible) and, from Python 3.11, ``++``, ``*+`` and ``?+`` are
+    "possessive" (never give characters back); ``?*`` is even an error.
+    So the run is replaced by the single operator it is equivalent to:
+
+    * only ``+`` (one or more, repeated) is still ``+``;
+    * only ``?`` (optional, repeated) is still ``?``;
+    * any mix, or any ``*``, allows zero or more, so it becomes ``*``.
+    """
+    j = i
+    while j < len(s) and s[j] in "+*?":
+        j += 1
+    run = s[i:j]
+    if j - i == 1:
+        return run, j  # the common case: a single operator, unchanged
+    if run == "+" * len(run):
+        return "+", j
+    if run == "?" * len(run):
+        return "?", j
+    return "*", j
 
 
 def _bracket(s: str, i: int) -> tuple[str, int]:
