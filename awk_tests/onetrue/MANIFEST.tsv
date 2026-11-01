@@ -40,7 +40,7 @@ p.40	run		agree
 p.41	run		agree
 p.42	run		agree
 p.43	sorted	for-in order is unspecified	agree
-p.44	skip	deferred: user-defined functions	agree
+p.44	run		agree
 p.45	run		agree
 p.46	run		agree
 p.47	skip	writes files: tempbig tempsmall	agree
@@ -83,7 +83,7 @@ t.arith	skip	onetrue extension: mawk and gawk --posix reject it	onetrue differs 
 t.array	run		agree
 t.array1	run		gawk --posix differs
 t.array2	run		agree
-t.assert	skip	deferred: user-defined functions	agree
+t.assert	run		agree
 t.avg	run		agree
 t.b.x	run		agree
 t.be	run		agree
@@ -118,7 +118,7 @@ t.do	run		agree
 t.e	run		agree
 t.else	run		agree
 t.exit	run		agree
-t.exit1	skip	deferred: user-defined function call myabort()	agree
+t.exit1	run		agree
 t.f	run		agree
 t.f.x	run		agree
 t.f0	run		agree
@@ -131,13 +131,13 @@ t.for1	run		agree
 t.for2	run		agree
 t.for3	run		agree
 t.format4	run		agree
-t.fun	skip	deferred: user-defined functions	agree
-t.fun0	skip	deferred: user-defined functions	agree
-t.fun1	skip	deferred: user-defined functions	agree
-t.fun2	skip	deferred: user-defined functions	agree
-t.fun3	skip	deferred: user-defined functions	agree
-t.fun4	skip	deferred: user-defined functions	agree
-t.fun5	skip	deferred: user-defined functions	agree
+t.fun	run		agree
+t.fun0	run		agree
+t.fun1	run		agree
+t.fun2	run		agree
+t.fun3	run		agree
+t.fun4	run		agree
+t.fun5	run		agree
 t.getline1	run		agree
 t.getval	run		agree
 t.gsub	run		agree
@@ -197,7 +197,7 @@ t.seqno	run		agree
 t.set0	run		agree
 t.set0a	run		agree
 t.set0b	run		mawk differs
-t.set1	skip	deferred: user-defined functions	agree
+t.set1	run		agree
 t.set2	run		mawk differs
 t.set3	run		agree
 t.split1	run		agree

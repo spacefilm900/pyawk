@@ -193,9 +193,15 @@ def main() -> int:
     awks = {"onetrue": [opts.onetrue], "mawk": [opts.mawk], "gawk": [opts.gawk, "--posix"]}
 
     # Start from an empty directory so removed upstream tests disappear too.
+    # KNOWN_FAILURES is ours, not imported (run_golden.py maintains it), so
+    # keep its text across the rebuild.
+    known = DEST / "KNOWN_FAILURES"
+    known_text = known.read_text() if known.exists() else None
     if DEST.exists():
         shutil.rmtree(DEST)
     DEST.mkdir(parents=True)
+    if known_text is not None:
+        known.write_text(known_text)
 
     names = sorted(p.name for p in opts.src.glob("[tp].*") if p.name not in NOT_TESTS)
     rows = []
