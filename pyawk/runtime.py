@@ -534,6 +534,7 @@ class Interpreter:
         # Compiling never fails: mistakes that AWK reports only when the
         # code runs are compiled into code that raises then.
         prog = Compiler(self).compile_program(self.program)
+        finished = False  # True once END is done with no error in flight
         try:
             try:
                 for block in prog.begin:
@@ -547,6 +548,7 @@ class Interpreter:
                     self._run_special(block)
             except ExitEx as e:
                 self.exit_code = e.code
+            finished = True
         # (``from None`` hides the internal exception from error reports.)
         except RecursionError:
             self.frame = None
@@ -555,7 +557,11 @@ class Interpreter:
             try:
                 self.io.close_all()
             except BrokenPipeError:
-                pass
+                # The reader of our output has gone away.  After a normal
+                # finish, let cli.main turn that into death by SIGPIPE, as
+                # for a C awk; otherwise keep the error already on its way.
+                if finished:
+                    raise
         return self.exit_code
 
     @staticmethod

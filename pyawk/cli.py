@@ -16,6 +16,7 @@ Entry points:
 from __future__ import annotations
 
 import os
+import signal
 import sys
 from typing import IO, Sequence
 
@@ -166,10 +167,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(f"pyawk: {exc}\n")
         return 2
     except BrokenPipeError:
-        # The reader went away (e.g. ``pyawk ... | head``).  Point stdout at
-        # /dev/null so Python's final flush at exit does not complain again.
+        # The reader went away: our standard output (``pyawk ... | head``)
+        # or a command we print to (``print | "head -1"``).  A C program is
+        # simply killed by the SIGPIPE signal at that point, and mawk,
+        # onetrue-awk and gawk all end that way (the shell reports status
+        # 141).  Python ignores SIGPIPE and raises this exception instead,
+        # so we restore the default action and send the signal to ourselves.
+        # First point stdout at /dev/null, so nothing else tries to write
+        # to the broken pipe on the way out.
         devnull = os.open(os.devnull, os.O_WRONLY)
         os.dup2(devnull, sys.stdout.fileno())
+        if hasattr(signal, "SIGPIPE"):  # not on Windows
+            signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+            os.kill(os.getpid(), signal.SIGPIPE)
         return 2
     except KeyboardInterrupt:
         return 130  # conventional status for "interrupted by Ctrl-C" (128 + 2)
