@@ -1290,8 +1290,11 @@ class Compiler:
 
         * ``getline [var]``: next record of the main input; NR and FNR go up.
         * ``getline [var] < file``: from a file; NR/FNR unchanged.
-        * ``cmd | getline [var]``: from a command's output; NR goes up.
+        * ``cmd | getline [var]``: from a command's output; NR/FNR unchanged.
         Without ``var`` the record replaces $0 (and so NF).
+
+        POSIX says ``cmd | getline`` increments NR, but mawk, onetrue-awk
+        and gawk all leave it alone, and so do we (see DESIGN.md).
 
         The variable is resolved *before* reading, as gawk and mawk do, so
         the subscript in ``getline a[++c] < f`` is evaluated (and the
@@ -1334,8 +1337,6 @@ class Compiler:
                 rec = reader.read_record(rs)
                 if rec is None:
                     return 0.0
-                if kind == "cmd":
-                    vars_["NR"] = to_num(vars_["NR"]) + 1.0
             if ref is None:
                 it.set_record(rec)
             else:
