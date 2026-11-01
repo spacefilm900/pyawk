@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-"""Run the golden corpus against pyawk and print pass/fail per category.
+"""Run the golden corpus (and the imported onetrue suite) against pyawk.
 
-usage: scripts/run_golden.py [-v] [--diff] [CATEGORY or CATEGORY/NAME ...]
+usage: scripts/run_golden.py [-v] [--diff] [--write-known-failures] [CATEGORY or CATEGORY/NAME ...]
 
 Each case's stdout must match its ``.out`` file byte for byte (those files
-were produced by the reference awk; see regen_golden.py).  Exits 1 if any
-case fails, so it can be used in automation.
+were produced by a reference awk; see regen_golden.py and import_onetrue.py).
+Cases whose MANIFEST.tsv status is "sorted" are compared line-order-blind,
+and "skip" cases are not run at all but counted in the "skip" column.
+
+Prints pass/fail/skip per category and exits 1 if any case fails, so it can
+be used in automation.  Failures listed in a category's KNOWN_FAILURES file
+are marked "(known)" but still count as failures here; pytest is the place
+where they are tolerated.  --write-known-failures rewrites the onetrue
+KNOWN_FAILURES file from this run's failures.
 """
 
 from __future__ import annotations
@@ -24,9 +31,11 @@ import harness  # noqa: E402
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-v", "--verbose", action="store_true", help="list every case")
     ap.add_argument("--diff", action="store_true", help="show a diff for failures")
+    ap.add_argument("--write-known-failures", action="store_true",
+                    help="record this run's onetrue failures in awk_tests/onetrue/KNOWN_FAILURES")
     ap.add_argument("cases", nargs="*")
     opts = ap.parse_args()
     # List comprehension: keep the cases the user selected (all, by default).
@@ -34,20 +43,26 @@ def main() -> int:
     # defaultdict: a dict that creates a missing entry (0, or an empty list)
     # the first time it is used, so counting needs no "is it there?" check.
     passed: dict[str, int] = defaultdict(int)
+    skipped: dict[str, int] = defaultdict(int)
     failed: dict[str, list[str]] = defaultdict(list)
     for case in cases:
+        if case.skipped:
+            skipped[case.category] += 1
+            if opts.verbose:
+                print(f"SKIP {case.id}  ({case.reason})")
+            continue
         proc = harness.run_case(case, harness.pyawk_command())
-        expected = case.expected()
-        ok = proc.stdout == expected
+        ok = case.matches(proc.stdout)
         if ok:
             passed[case.category] += 1
         else:
             failed[case.category].append(case.name)
         if opts.verbose or not ok:
-            print(f"{'PASS' if ok else 'FAIL'} {case.id}")
+            known = " (known)" if case.known_failure and not ok else ""
+            print(f"{'PASS' if ok else 'FAIL'} {case.id}{known}")
         if not ok and opts.diff:
             diff = difflib.unified_diff(
-                expected.splitlines(keepends=True), proc.stdout.splitlines(keepends=True),
+                case.expected().splitlines(keepends=True), proc.stdout.splitlines(keepends=True),
                 "expected", "pyawk",
             )
             sys.stdout.writelines("    " + line for line in diff)
@@ -55,15 +70,24 @@ def main() -> int:
                 print("    stderr:", proc.stderr.strip())
     print()
     # f-strings: ``{x:<12}`` inserts x left-aligned in 12 columns, ``>5`` right-aligned.
-    print(f"{'category':<12} {'pass':>5} {'fail':>5}")
-    total_p = total_f = 0
-    for cat in harness.CATEGORIES:
-        p, f = passed[cat], len(failed[cat])
-        if p or f:
-            print(f"{cat:<12} {p:>5} {f:>5}" + (f"   ({', '.join(failed[cat])})" if f else ""))
+    print(f"{'category':<12} {'pass':>5} {'fail':>5} {'skip':>5}")
+    total_p = total_f = total_s = 0
+    for cat in harness.ALL_CATEGORIES:
+        p, f, s = passed[cat], len(failed[cat]), skipped[cat]
+        if p or f or s:
+            # Long failure lists (the onetrue suite) are only counted here.
+            names = f"   ({', '.join(failed[cat])})" if 0 < f <= 10 else ""
+            print(f"{cat:<12} {p:>5} {f:>5} {s:>5}" + names)
         total_p += p
         total_f += f
-    print(f"{'TOTAL':<12} {total_p:>5} {total_f:>5}")
+        total_s += s
+    print(f"{'TOTAL':<12} {total_p:>5} {total_f:>5} {total_s:>5}")
+
+    if opts.write_known_failures:
+        path = harness.ONETRUE / "KNOWN_FAILURES"
+        lines = ["# onetrue cases pyawk currently fails; written by scripts/run_golden.py --write-known-failures"]
+        path.write_text("\n".join([*lines, *failed["onetrue"]]) + "\n")
+        print(f"wrote {len(failed['onetrue'])} names to {path}")
     return 1 if total_f else 0
 
 

@@ -1,0 +1,3 @@
+# onetrue cases pyawk currently fails; written by scripts/run_golden.py --write-known-failures
+t.null0
+t.sub0

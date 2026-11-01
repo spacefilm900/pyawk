@@ -49,5 +49,22 @@ Golden cases live in `awk_tests/golden/<category>/NAME.{awk,in,out[,args]}`
 and run as `awk [args] -f NAME.awk NAME.in` from the category directory.
 `scripts/make_corpus.py` is the source of the `.awk/.in/.args` files.
 
+### Imported onetrue-awk suite
+
+`awk_tests/onetrue/` holds the `t.*` and `p.*` programs from onetrue-awk's
+`testdir/`, imported by `scripts/import_onetrue.py` (expected output from the
+onetrue-awk binary; mawk and `gawk --posix` are run too, for comparison).
+`MANIFEST.tsv` gives each case a status (`run`, `sorted` for programs that
+print in `for (k in a)` order, or `skip`), a reason and how the three
+reference awks compared. `KNOWN_FAILURES` lists cases pyawk still gets
+wrong; pytest reports them as expected failures (strict, so a fix forces the
+list to be updated) and `scripts/run_golden.py --write-known-failures`
+regenerates it.
+
+```sh
+scripts/import_onetrue.py   # re-import (needs /workspace/refs/onetrue-awk/a.out, mawk, gawk)
+scripts/run_golden.py onetrue --diff
+```
+
 See [DESIGN.md](DESIGN.md) for architecture, semantics decisions and the list
 of places where mawk (the reference used for `.out`) differs from POSIX.

@@ -8,6 +8,19 @@ e.g. ``-F:``; they are placed before ``-f <name>.awk``.
 Each case runs as ``<awk> [args] -f <name>.awk <name>.in`` with the
 category directory as the working directory.  The same function runs
 either pyawk or a reference awk, which is what makes the outputs comparable.
+
+A second suite, ``awk_tests/onetrue/``, holds the test programs imported
+from onetrue-awk by scripts/import_onetrue.py.  It uses the same files plus:
+
+* ``<name>.operands`` (optional): replaces the single ``<name>.in`` operand
+  (shell syntax), e.g. ``p.1.in p.1.in`` to read the input twice;
+* ``MANIFEST.tsv``: per-case status -- ``run``, ``sorted`` (compare the
+  output lines after sorting, because the program prints in the
+  unspecified ``for (k in a)`` order) or ``skip`` -- with a reason;
+* ``KNOWN_FAILURES`` (optional): names of cases pyawk is known to fail,
+  one per line (``#`` starts a comment).  pytest reports them as expected
+  failures, so the suite stays green while they are being fixed, and
+  complains as soon as one starts passing so the list stays accurate.
 """
 
 # Treat type hints as text, so newer syntax such as ``list[str]`` is allowed.
@@ -24,6 +37,14 @@ ROOT = Path(__file__).resolve().parent
 GOLDEN = ROOT / "golden"
 REPO = ROOT.parent
 CATEGORIES = ("basic", "fields", "patterns", "control", "arrays", "builtins", "one_liners")
+ONETRUE = ROOT / "onetrue"
+# Every category we know about: the golden ones plus the imported suite.
+ALL_CATEGORIES = (*CATEGORIES, "onetrue")
+
+
+def category_dir(cat: str) -> Path:
+    """Where a category's files live (the onetrue suite is not under golden/)."""
+    return ONETRUE if cat == "onetrue" else GOLDEN / cat
 
 
 # ``@dataclass`` generates the constructor from the annotated fields below,
@@ -36,6 +57,10 @@ class Case:
     category: str
     name: str
     directory: Path
+    # The fields below have defaults, so golden cases can leave them out.
+    status: str = "run"  # "run", "sorted" or "skip" (from MANIFEST.tsv)
+    reason: str = ""  # why it is skipped / sorted
+    known_failure: bool = False  # listed in KNOWN_FAILURES
 
     # ``@property``: read as ``case.id`` without parentheses.
     @property
@@ -49,23 +74,70 @@ class Case:
         p = self.path(".args")
         return shlex.split(p.read_text()) if p.exists() else []
 
+    def operands(self) -> list[str]:
+        """The input files to name on the command line (usually just .in)."""
+        p = self.path(".operands")
+        return shlex.split(p.read_text()) if p.exists() else [f"{self.name}.in"]
+
     def command(self, awk: list[str]) -> list[str]:
         # ``[*a, *b, ...]`` builds one list from the items of a, then b, etc.
-        return [*awk, *self.extra_args(), "-f", f"{self.name}.awk", f"{self.name}.in"]
+        return [*awk, *self.extra_args(), "-f", f"{self.name}.awk", *self.operands()]
 
     def expected(self) -> str:
         return self.path(".out").read_text(encoding="utf-8", errors="surrogateescape")
 
+    @property
+    def skipped(self) -> bool:
+        return self.status == "skip"
 
-def discover(categories: tuple[str, ...] = CATEGORIES) -> list[Case]:
+    def matches(self, stdout: str) -> bool:
+        """Does this output count as correct?  (Order-blind for "sorted".)"""
+        expected = self.expected()
+        if self.status == "sorted":
+            # ``sorted(...)`` returns the lines in order; keepends=True keeps
+            # each line's "\n" so a missing final newline still counts.
+            return sorted(stdout.splitlines(keepends=True)) == sorted(expected.splitlines(keepends=True))
+        return stdout == expected
+
+
+def read_manifest(directory: Path) -> dict[str, tuple[str, str]]:
+    """Map case name -> (status, reason) from ``MANIFEST.tsv``, if present."""
+    p = directory / "MANIFEST.tsv"
+    result: dict[str, tuple[str, str]] = {}
+    if not p.exists():
+        return result
+    for line in p.read_text().splitlines():
+        if not line or line.startswith("#") or line.startswith("name\t"):
+            continue  # blank, comment or the header row
+        name, status, reason, *_rest = line.split("\t")
+        result[name] = (status, reason)
+    return result
+
+
+def read_known_failures(directory: Path) -> set[str]:
+    """Names listed in ``KNOWN_FAILURES`` (text after ``#`` is a comment)."""
+    p = directory / "KNOWN_FAILURES"
+    if not p.exists():
+        return set()
+    # A set comprehension; ``partition("#")[0]`` is the text before any "#".
+    names = {line.partition("#")[0].strip() for line in p.read_text().splitlines()}
+    return names - {""}
+
+
+def discover(categories: tuple[str, ...] = ALL_CATEGORIES) -> list[Case]:
     """All cases, one per ``.awk`` file, in a stable (sorted) order."""
     cases: list[Case] = []
     for cat in categories:
-        d = GOLDEN / cat
+        d = category_dir(cat)
         if not d.is_dir():
             continue
+        manifest = read_manifest(d)
+        known = read_known_failures(d)
         for awk_file in sorted(d.glob("*.awk")):
-            cases.append(Case(cat, awk_file.stem, d))
+            name = awk_file.stem  # file name without the final ".awk"
+            # ``.get(key, default)``: cases missing from the manifest just run.
+            status, reason = manifest.get(name, ("run", ""))
+            cases.append(Case(cat, name, d, status, reason, name in known))
     return cases
 
 
