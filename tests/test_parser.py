@@ -307,3 +307,43 @@ def test_syntax_errors() -> None:
     for bad in ["BEGIN {", "{ print ( }", "{ 1 = 2 }", "{ x y = 3 }", "BEGIN { if x }"]:
         with pytest.raises(AwkSyntaxError):
             parse(bad)
+
+
+# A parenthesised list ``(a, b)`` is only meaningful right before ``in`` or
+# as the whole argument list of print/printf.  Used anywhere else it is a
+# syntax error in all three reference awks, even in code that never runs.
+@pytest.mark.parametrize(
+    "src",
+    [
+        "BEGIN { if (0) x = 1 + (1, 2) }",
+        "BEGIN { if ((1, 2)) print }",
+        "BEGIN { x = (1, 2) }",
+        "BEGIN { print (1, 2) (3) }",  # concatenated: not the whole list
+        "BEGIN { print -(1, 2) }",
+        "BEGIN { print ((1, 2)) }",  # extra parentheses
+        "BEGIN { a[1, 2]; print ((1, 2)) in a }",
+        "BEGIN { while ((1, 2)) ; }",
+        "BEGIN { y = (1, 2) ? 3 : 4 }",
+        "function f(x) { } BEGIN { f((1, 2) 3) }",
+    ],
+)
+def test_parenthesised_list_not_before_in_is_a_syntax_error(src: str) -> None:
+    with pytest.raises(AwkSyntaxError, match="parenthesised list"):
+        parse(src)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "BEGIN { print (1, 2) }",
+        'BEGIN { print (1, 2) > "/dev/null" }',
+        'BEGIN { printf ("%s %s", 1, 2) }',
+        "BEGIN { x = (1, 2) in a }",
+        "BEGIN { if ((1, 2) in a) print }",
+        "BEGIN { print (1, 2) in a }",
+        "BEGIN { print ((1, 2) in a) }",
+        "BEGIN { x = 1 + ((1, 2) in a) }",
+    ],
+)
+def test_parenthesised_list_before_in_or_after_print_is_fine(src: str) -> None:
+    parse(src)

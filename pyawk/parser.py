@@ -101,6 +101,11 @@ class Parser:
         # arguments, line) for every user function call.
         self.var_uses: list[tuple[str, int]] = []
         self.calls: list[tuple[str, int, int]] = []
+        # Parenthesised lists ``(a, b)`` not yet claimed by ``in`` or by
+        # print/printf, keyed by id() of the Group node, with the line of
+        # the ``(``.  Any left at the end of a rule or function were used
+        # as plain values, which is a syntax error (see check_groups).
+        self.open_groups: dict[int, int] = {}
 
     # ------------------------------------------------------------ utilities
     def peek(self, offset: int = 0) -> Token:
@@ -153,6 +158,7 @@ class Parser:
         self.skip_terminators()
         while not self.at("EOF"):
             self.parse_item(prog)
+            self.check_groups()
             self.skip_terminators()
         self.check_functions(prog)
         return prog
@@ -503,6 +509,7 @@ class Parser:
                 self.no_gt = saved
             # ``print (a, b)`` is the same as ``print a, b``.
             if len(args) == 1 and isinstance(args[0], ast.Group):
+                self.claim_group(args[0])
                 args = args[0].exprs
         for a in args:
             self.check_no_group(a)
@@ -523,9 +530,29 @@ class Parser:
             return ast.Printf(args, redirect, dest)
         return ast.Print(args, redirect, dest)
 
+    GROUP_ERROR = "parenthesised list is only valid before 'in' or after print"
+
     def check_no_group(self, e: ast.Expr) -> None:
         if isinstance(e, ast.Group):
-            raise AwkSyntaxError("parenthesised list is only valid before 'in' or after print", self.tok.line)
+            raise AwkSyntaxError(self.GROUP_ERROR, self.tok.line)
+
+    def claim_group(self, g: ast.Group) -> None:
+        """``g`` is used correctly (before ``in`` or as print's list)."""
+        self.open_groups.pop(id(g), None)
+
+    def check_groups(self) -> None:
+        """Called after each rule or function: a parenthesised list that
+        nothing claimed was used as a value, as in ``x = 1 + (1, 2)``.
+
+        All three reference awks reject that while parsing, even in code
+        that never runs.  It is simplest to check afterwards because a
+        list's meaning is only known once we see what follows it: in
+        ``(1, 2) in a`` the ``in`` comes after the whole Group is built.
+        """
+        if self.open_groups:
+            line = min(self.open_groups.values())
+            self.open_groups.clear()
+            raise AwkSyntaxError(self.GROUP_ERROR, line)
 
     # ---------------------------------------------------------- expressions
     def parse_expr_list(self) -> list[ast.Expr]:
@@ -616,7 +643,11 @@ class Parser:
             self.advance()
             name = self.name_use(self.expect("NAME"))
             # ``(i, j) in arr`` tests the multi-dimensional key i SUBSEP j.
-            subs = left.exprs if isinstance(left, ast.Group) else [left]
+            if isinstance(left, ast.Group):
+                self.claim_group(left)
+                subs = left.exprs
+            else:
+                subs = [left]
             left = ast.In(subs, name)
         return left
 
@@ -780,7 +811,7 @@ class Parser:
             self.advance()
             return ast.Field(self.parse_field_operand())
         if tt == "(":
-            self.advance()
+            line = self.advance().line
             saved = self.no_gt
             self.no_gt = False
             try:
@@ -794,10 +825,16 @@ class Parser:
             finally:
                 self.no_gt = saved
             # One expression in parentheses is just that expression (the
-            # tree's shape already records the grouping); a list is a Group.
+            # tree's shape already records the grouping); a list is a Group,
+            # which must be claimed later (see check_groups).  Extra
+            # parentheses around a list, ``((1, 2))``, are an error in all
+            # three reference awks, even before ``in``.
             if len(exprs) == 1:
-                return exprs[0] if not isinstance(exprs[0], ast.Group) else exprs[0]
-            return ast.Group(exprs)
+                self.check_no_group(exprs[0])
+                return exprs[0]
+            g = ast.Group(exprs)
+            self.open_groups[id(g)] = line
+            return g
         if tt == "NAME":
             self.advance()
             self.name_use(t)

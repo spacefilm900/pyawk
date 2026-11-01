@@ -129,10 +129,13 @@ $                                   ( grouping )
   parsed at concatenation level (like gawk), so `print 1 > "a" "b"` writes
   to `ab`; a `?:` target must be parenthesised.
 * `(a, b)` is a `Group` node: legal before `in` and as a `print` list.
-  A Group as a whole pattern (`(/a/, /b/)`) or as the value of an
-  assignment is a syntax error; elsewhere (a bare statement, an `if`
-  condition, inside a larger expression) it is only caught when evaluated
-  ("parenthesised expression list used as a value"); see Known issues.
+  Anywhere else (a whole pattern, an assignment's value, an `if`
+  condition, inside a larger expression, or wrapped in extra parentheses
+  as in `((a, b))`) it is a syntax error, as in all three reference awks,
+  even in code that never runs. Because `in` comes *after* the list, the
+  parser records each Group as it builds it, crosses it off when `in` or
+  `print` claims it, and reports any left over at the end of the rule or
+  function (`check_groups`).
 * Range patterns `start, end`: the comma is *not* an operator. `parse_item`
   parses one full expression as the pattern and then looks for a `,`, so
   the comma binds more loosely than anything (`$1 == "a" || $2, /x/` means
@@ -951,10 +954,6 @@ gives `""`. Tests: `tests/test_runtime.py`, golden `builtins/substr_clamp`
 * AWK recursion depth is limited (about 100 000 levels for a simple
   function, fewer for bodies with deeply nested statements); beyond that,
   a clean error.
-* A parenthesised list `(a, b)` not followed by `in` is a parse error only
-  as a whole pattern or an assigned value; in other places (`if ((a, b))`,
-  `x = 1 + (a, b)`) it is a run-time error when reached, whereas the
-  reference awks reject the program at parse time.
 * Performance: roughly 4–15× slower than mawk and 1–13× slower than
   `gawk --posix` on the benchmark workloads (gawk is itself slow on the
   regex and gsub ones, where pyawk is only 1.1× and 1.4× behind; see

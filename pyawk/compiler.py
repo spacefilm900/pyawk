@@ -852,6 +852,8 @@ class Compiler:
         return self._bool_value(node)  # a bare /re/ as a value: ($0 ~ /re/)
 
     def _e_Group(self, node: ast.Group) -> Thunk:
+        # Unreachable for parsed programs: the parser rejects a list used
+        # as a value (Parser.check_groups).  Kept as a safety net.
         return _raiser("parenthesised expression list used as a value")
 
     def _e_Var(self, node: ast.Var) -> Thunk:
