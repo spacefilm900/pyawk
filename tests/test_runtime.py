@@ -296,3 +296,21 @@ def test_substitute_paths(
 def test_default_fs_split(text: str, expected: str) -> None:
     prog = 'BEGIN { n = split(s, a); r = n ":"; for (i = 1; i <= n; i++) r = r "[" a[i] "]"; print r }'
     assert awk(prog, assignments=[("s", text)]) == (expected + "\n", 0)
+
+
+@pytest.mark.parametrize(
+    "prog,expected",
+    [
+        # Fields used only as strings skip the strnum check (Compiler.string);
+        # these pin down that the text is still right in every case.
+        ("{ print $1 $2, length($3), $9 \"|\" }", "0x1-1 4 |\n"),
+        ("{ a[$1]++; a[$1 + 0]++ } END { print a[\"0x1\"], a[0] }", "1 1\n"),
+        ('{ CONVFMT = "%.2g"; $2 = 3.14159; print $2 "|" length($2) }', "3.1|3\n"),
+        ('{ CONVFMT = "%.2g"; $2 = 3.14159; print $2 "" }', "3.1\n"),
+        ('{ CONVFMT = "%.2g"; $2 = 3.14159; x = $2 ""; print x, length(x) }', "3.1 3\n"),
+        ("{ NF = 2; i = 3; print $1 $2 $i \"|\" length($i) }", "0x1-1|0\n"),
+        ("{ i = 2; print toupper($i) index($0, $i), $i ~ /^-/ }", "-15 1\n"),
+    ],
+)
+def test_field_string_paths(prog: str, expected: str) -> None:
+    assert awk(prog, "0x1 -1 abcd\n") == (expected, 0)

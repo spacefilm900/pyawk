@@ -457,7 +457,7 @@ def _length(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     if not args:
         return lambda: float(len(it.record))
     a = args[0]
-    e, sval = c.expr(a), c.sval
+    e = c.string(a)  # only the string is needed: cheaper for fields
     if isinstance(a, ast.Var):
         # A bare name may be an array (count its elements) or a variable
         # never used yet: length 0, and it stays untyped, so it may still
@@ -470,22 +470,22 @@ def _length(c: "Compiler", args: list[ast.Expr]) -> Thunk:
                 return float(len(arr()))
             if k == "untyped":
                 return 0.0
-            return float(len(sval(e())))
+            return float(len(e()))
 
         return length_name
-    return lambda: float(len(sval(e())))
+    return lambda: float(len(e()))
 
 
 def _substr(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     if bad := _arity("substr", args, 2, 3):
         return bad
-    s, m, sval = c.expr(args[0]), c.expr(args[1]), c.sval
+    s, m = c.string(args[0]), c.expr(args[1])
     if len(args) == 2:
-        return lambda: substr(sval(s()), to_num(m()))
+        return lambda: substr(s(), to_num(m()))
     n = c.expr(args[2])
 
     def substr3() -> Value:
-        text = sval(s())
+        text = s()
         start = to_num(m())
         return substr(text, start, to_num(n()))
 
@@ -495,11 +495,11 @@ def _substr(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 def _index(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     if bad := _arity("index", args, 2, 2):
         return bad
-    s, t, sval = c.expr(args[0]), c.expr(args[1]), c.sval
+    s, t = c.string(args[0]), c.string(args[1])
 
     def index_() -> Value:
-        text = sval(s())
-        return float(index(text, sval(t())))
+        text = s()
+        return float(index(text, t()))
 
     return index_
 
@@ -592,11 +592,11 @@ def _match(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     """match(s, re): sets RSTART (1-based, 0 if none) and RLENGTH (-1 if none)."""
     if bad := _arity("match", args, 2, 2):
         return bad
-    s, pattern, sval = c.expr(args[0]), c.regex(args[1]), c.sval
+    s, pattern = c.string(args[0]), c.regex(args[1])
     set_start, set_length = c.scalar_setter("RSTART"), c.scalar_setter("RLENGTH")
 
     def match() -> Value:
-        text = sval(s())
+        text = s()
         m = pattern().search(text)
         if m is None:
             start, length = 0.0, -1.0
@@ -709,15 +709,15 @@ def _srand(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 def _tolower(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     if bad := _arity("tolower", args, 1, 1):
         return bad
-    e, sval = c.expr(args[0]), c.sval
-    return lambda: sval(e()).lower()
+    e = c.string(args[0])
+    return lambda: e().lower()
 
 
 def _toupper(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     if bad := _arity("toupper", args, 1, 1):
         return bad
-    e, sval = c.expr(args[0]), c.sval
-    return lambda: sval(e()).upper()
+    e = c.string(args[0])
+    return lambda: e().upper()
 
 
 def _system(c: "Compiler", args: list[ast.Expr]) -> Thunk:

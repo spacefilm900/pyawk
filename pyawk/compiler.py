@@ -648,10 +648,10 @@ class Compiler:
         return compare
 
     def _match(self, node: ast.Match) -> CondFn:
-        left, pat, sval = self.expr(node.left), self.regex(node.regex), self.sval
+        left, pat = self.string(node.left), self.regex(node.regex)
         if node.negate:
-            return lambda: pat().search(sval(left())) is None
-        return lambda: pat().search(sval(left())) is not None
+            return lambda: pat().search(left()) is None
+        return lambda: pat().search(left()) is not None
 
     def _in(self, node: ast.In) -> CondFn:
         # ``(k in arr)`` tests membership without creating the element.
@@ -680,7 +680,7 @@ class Compiler:
                 # A bad regex is reported when it is used, not before.
                 return lambda: compile_ere(source)
             return _const(pattern)
-        e, sval = self.expr(node), self.sval
+        e = self.string(node)
         last_source: str | None = None
         last_pattern: re.Pattern[str] | None = None
 
@@ -688,7 +688,7 @@ class Compiler:
             # ``nonlocal``: assign to the enclosing function's variables
             # (without it, assigning would make new local ones).
             nonlocal last_source, last_pattern
-            s = sval(e())
+            s = e()
             if s != last_source:
                 last_pattern = compile_ere(s)
                 last_source = s
@@ -783,6 +783,71 @@ class Compiler:
             return get_field(_field_number(n))  # type: ignore[arg-type]
 
         return field_var
+
+    def string(self, node: ast.Expr) -> Callable[[], str]:
+        """Closure giving the *string* value of ``node``.
+
+        Many places only want a string: array subscripts, ``length``,
+        regex matching, concatenation.  For a field (``$3`` or ``$i``) the
+        string is simply the field's text, so we can skip deciding whether
+        it looks like a number (the strnum check that reading a field as a
+        value needs).  For anything else this is ``sval(expr())`` with the
+        conversion written out, so it costs no extra call.
+        """
+        if type(node) is ast.Str:
+            return _const(node.value)  # type: ignore[attr-defined]
+        sval, vars_ = self.sval, self.vars
+        if type(node) is ast.Field:
+            it = self.it
+            k = _int_const(node.index)
+            if k is not None and k > 0:
+                i = k - 1
+
+                def field_const_str() -> str:
+                    fields = it.fields
+                    if fields is None:
+                        fields = it.split_record()
+                    if i < len(fields):
+                        v = fields[i]
+                        if v is None:  # not classified yet: its text is the string
+                            return it.field_text[i]
+                        return v if type(v) is str else sval(v)  # type: ignore[return-value]
+                    return ""
+
+                return field_const_str
+            if k is None:
+                e, get_field = self.expr(node.index), it.get_field
+
+                def field_var_str() -> str:
+                    n = e()
+                    if type(n) is not float:
+                        n = to_num(n)
+                    if 1.0 <= n < 1e9:  # type: ignore[operator]  # False for NaN
+                        i = int(n) - 1  # type: ignore[arg-type]
+                        fields = it.fields
+                        if fields is None:
+                            fields = it.split_record()
+                        if i < len(fields):
+                            v = fields[i]
+                            if v is None:
+                                return it.field_text[i]
+                            return v if type(v) is str else sval(v)  # type: ignore[return-value]
+                        return ""
+                    return sval(get_field(_field_number(n)))  # type: ignore[arg-type]
+
+                return field_var_str
+        e = self.expr(node)
+
+        def string() -> str:
+            v = e()
+            t = type(v)
+            if t is str:
+                return v  # type: ignore[return-value]
+            if t is StrNum:
+                return v.s  # type: ignore[union-attr]
+            return num_to_str(v, to_str(vars_["CONVFMT"]))  # type: ignore[arg-type]
+
+        return string
 
     def _field_index(self, node: ast.Expr) -> Callable[[], int]:
         if (k := _int_const(node)) is not None:  # ``:=`` assigns inside an expression
@@ -907,23 +972,13 @@ class Compiler:
     def _e_Concat(self, node: ast.Concat) -> Thunk:
         nodes: list[ast.Expr] = []
         _flatten_concat(node, nodes)
-        parts, sval = [self.expr(n) for n in nodes], self.sval
+        parts = [self.string(n) for n in nodes]
         if len(parts) == 2:
             a, b = parts
-
-            def concat2() -> Value:
-                x = a()
-                if type(x) is not str:
-                    x = sval(x)
-                y = b()
-                if type(y) is not str:
-                    y = sval(y)
-                return x + y  # type: ignore[operator]
-
-            return concat2
+            return lambda: a() + b()
         # Each part is converted to a string right after it is evaluated
         # (CONVFMT could change in between), then all are joined at once.
-        return lambda: "".join([sval(p()) for p in parts])
+        return lambda: "".join([p() for p in parts])
 
     def _e_Binary(self, node: ast.Binary) -> Thunk:
         left = self.expr(node.left)
@@ -1339,18 +1394,12 @@ class Compiler:
             k = _int_const(node)
             if k is not None:
                 return _const(str(k))  # whole numbers print the same under any CONVFMT
-            e = self.expr(node)
-
-            def key() -> str:
-                v = e()
-                return v if type(v) is str else sval(v)  # type: ignore[return-value]
-
-            return key
-        parts, vars_ = [self.expr(e) for e in subs], self.vars
+            return self.string(node)
+        parts, vars_ = [self.string(e) for e in subs], self.vars
 
         def multi_key() -> str:
             sep = sval(vars_["SUBSEP"])
-            return sep.join([sval(p()) for p in parts])
+            return sep.join([p() for p in parts])
 
         return multi_key
 
