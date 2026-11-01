@@ -435,3 +435,48 @@ def test_printf_whole_format_matches_piecewise(monkeypatch: pytest.MonkeyPatch) 
 )
 def test_sub_on_record(prog: str, expected: str) -> None:
     assert awk(prog, "a b c\n") == (expected, 0)
+
+
+# ------------------------------------------------- the big-stack helper thread
+# Programs with functions run in a helper thread with a large stack (see
+# runtime.run_with_big_stack).  (CodeRabbit v1.0, finding 5.)
+FUNC_PROG = "function f(x) { return x + 1 } BEGIN { print f(1) }"
+
+
+def test_failed_thread_start_runs_inline(monkeypatch: pytest.MonkeyPatch) -> None:
+    # If the operating system refuses to start the thread (e.g. a 1 GiB
+    # stack cannot be mapped under ``ulimit -v``), pyawk must still run the
+    # program, just in the current thread, instead of crashing.
+    import threading
+
+    def refuse(self: threading.Thread) -> None:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    assert awk(FUNC_PROG) == ("2\n", 0)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX signals")
+@pytest.mark.parametrize("loop", ["x++", 'print "some output"'])
+def test_ctrl_c_in_function_program_exits_130(loop: str) -> None:
+    # Ctrl-C (SIGINT) while an endless loop runs in the helper thread: the
+    # process must exit with status 130, not hang waiting for the thread,
+    # nor abort with "Fatal Python error" while the thread is printing.
+    import signal
+    import time
+
+    prog = f'function f() {{ }} BEGIN {{ print "go"; fflush(); while (1) {loop} }}'
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "pyawk", prog],
+        cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    try:
+        assert proc.stdout is not None
+        assert proc.stdout.readline() == b"go\n"  # the loop has started
+        time.sleep(0.2)
+        proc.send_signal(signal.SIGINT)
+        assert proc.wait(timeout=10) == 130
+        assert b"Traceback" not in proc.stderr.read()  # type: ignore[union-attr]
+    finally:
+        proc.kill()
+        proc.wait()

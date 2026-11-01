@@ -40,7 +40,7 @@ import re
 import subprocess
 import sys
 import threading
-from typing import IO, Any, Iterable
+from typing import IO, Any, Callable, Iterable, TypeVar
 
 from . import ast
 from .compiler import NEXT, NEXTFILE, CompiledProgram, Compiler
@@ -86,6 +86,68 @@ RECURSION_LIMIT = 400_000
 # Running out of the *operating-system* stack would crash Python outright,
 # so the interpreter runs in a thread with a stack this large (bytes).
 THREAD_STACK_SIZE = 1 << 30
+
+# ``TypeVar`` names "some type": run_with_big_stack returns whatever type
+# the function it is given returns.
+_T = TypeVar("_T")
+
+
+def run_with_big_stack(fn: Callable[[], _T]) -> _T:
+    """Call ``fn()`` in a helper thread with a big stack and a high
+    recursion limit, and return its result (or raise its exception).
+
+    Used for deeply recursive AWK functions and for very deeply nested
+    programs (see cli.run).  Three safety rules:
+
+    * If this platform will not give us a big stack, or the operating
+      system refuses to start the thread (``RuntimeError: can't start new
+      thread``, e.g. under ``ulimit -v``), ``fn`` simply runs here instead,
+      with Python's usual (shallow, but safe) recursion limit.
+    * The thread is a *daemon* thread: Python does not wait for daemon
+      threads when the program ends.  On Ctrl-C the main thread stops
+      waiting (KeyboardInterrupt, see cli.main) while the helper may still
+      be inside an endless AWK loop; a normal thread would keep the
+      process alive.
+    * The stack size and recursion limit are put back afterwards, however
+      we leave (``finally``).
+    """
+    # A one-element list lets the thread hand back its result (or the
+    # exception it raised), since a thread cannot return a value.
+    result: list[Any] = []
+
+    def target() -> None:
+        try:
+            result.append(fn())
+        except BaseException as exc:  # re-raised in the calling thread below
+            result.append(exc)
+
+    old_limit = sys.getrecursionlimit()
+    try:
+        old_size = threading.stack_size(THREAD_STACK_SIZE)
+    except (ValueError, RuntimeError):
+        return fn()  # no big stacks here: run normally
+    # The limit is raised before the thread starts, so it is in force from
+    # the thread's first instruction.
+    sys.setrecursionlimit(max(old_limit, RECURSION_LIMIT))
+    try:
+        thread = threading.Thread(target=target, daemon=True)
+        try:
+            thread.start()
+        except RuntimeError:
+            # The thread could not be started; restore the old stack size
+            # and limit (``finally`` below) and run in this thread instead.
+            started = False
+        else:
+            started = True
+            thread.join()  # wait for it; Ctrl-C raises KeyboardInterrupt here
+    finally:
+        threading.stack_size(old_size)
+        sys.setrecursionlimit(old_limit)
+    if not started:
+        return fn()
+    if isinstance(result[0], BaseException):
+        raise result[0]
+    return result[0]  # type: ignore[no-any-return]
 
 
 class Cell:
@@ -502,34 +564,7 @@ class Interpreter:
         """
         if not self.program.functions:
             return self._run()
-        # A one-element list lets the thread hand back its result (or the
-        # exception it raised), since a thread cannot return a value.
-        result: list[Any] = []
-
-        def target() -> None:
-            try:
-                result.append(self._run())
-            except BaseException as exc:  # re-raised in this thread below
-                result.append(exc)
-
-        old_limit = sys.getrecursionlimit()
-        try:
-            old_size = threading.stack_size(THREAD_STACK_SIZE)
-        except (ValueError, RuntimeError):
-            # This platform will not give us a big stack: run normally,
-            # with Python's usual (shallow, but safe) recursion limit.
-            return self._run()
-        sys.setrecursionlimit(max(old_limit, RECURSION_LIMIT))
-        try:
-            thread = threading.Thread(target=target)
-            thread.start()
-            thread.join()
-        finally:
-            threading.stack_size(old_size)
-            sys.setrecursionlimit(old_limit)
-        if isinstance(result[0], BaseException):
-            raise result[0]
-        return result[0]
+        return run_with_big_stack(self._run)
 
     def _run(self) -> int:
         """BEGIN, the main record loop, END; returns the exit status.

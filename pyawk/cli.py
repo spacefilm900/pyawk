@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import signal
 import sys
+import threading
 from typing import IO, Sequence
 
 from . import __version__
@@ -182,7 +183,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             os.kill(os.getpid(), signal.SIGPIPE)
         return 2
     except KeyboardInterrupt:
-        return 130  # conventional status for "interrupted by Ctrl-C" (128 + 2)
+        # 130 is the conventional status for "interrupted by Ctrl-C" (128 + 2).
+        if threading.active_count() > 1:
+            # The program is still running in the helper thread (see
+            # runtime.run_with_big_stack), maybe in the middle of writing to
+            # stdout.  A normal Python shutdown would then try to flush
+            # stdout, find it busy and abort with "Fatal Python error".  So
+            # leave at once with os._exit, which skips the shutdown steps.
+            # Unflushed output is lost, just as when a C awk is killed by
+            # Ctrl-C.
+            sys.stderr.flush()
+            os._exit(130)
+        return 130
 
 
 # The public names of this module (what ``from pyawk.cli import *`` gives).
