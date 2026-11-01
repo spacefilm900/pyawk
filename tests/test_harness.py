@@ -66,3 +66,55 @@ def test_decided_case_with_three_way_split_follows_the_decision(
         stdout=next(v for k, v in answers.items() if regen.REFERENCES[k] == cmd)))
     monkeypatch.setattr(regen.harness, "read_decisions", lambda: {"io/close_status": "follow mawk"})
     assert regen.vote([_fake_case(tmp_path, recorded)]) == problems
+
+
+def test_utf8_cases_run_in_a_utf8_locale(tmp_path: Path) -> None:
+    # Cases in a category listed in harness.LOCALES run with that locale;
+    # every other case runs with LC_ALL=C.
+    for name in ("a.awk", "a.in"):
+        (tmp_path / name).write_text("")
+    for category, expected in (("utf8", "C.UTF-8"), ("basic", "C")):
+        case = harness.Case(category, "a", tmp_path)
+        proc = harness.run_case(case, ["/bin/sh", "-c", 'echo "$LC_ALL"', "sh"])
+        assert proc.stdout == expected + "\n"
+
+
+def _utf8_case(tmp_path: Path, recorded: str) -> SimpleNamespace:
+    out = tmp_path / "x.out"
+    out.write_text(recorded)
+    return SimpleNamespace(id="utf8/x", path=lambda ext: out, expected=lambda: out.read_text())
+
+
+@pytest.mark.parametrize(
+    "recorded, overridden, problems", [("gawk\n", False, 0), ("onetrue\n", False, 1), ("mine\n", True, 0)]
+)
+def test_utf8_vote_follows_gawk_without_mawk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recorded: str, overridden: bool, problems: int
+) -> None:
+    # mawk works on bytes only, so it has no vote on UTF-8 cases; when
+    # onetrue-awk and gawk disagree, the .out must be gawk's answer (or the
+    # case is hand-corrected in OVERRIDES).
+    regen = _load_regen()
+    answers = {"onetrue": "onetrue\n", "gawk": "gawk\n"}
+    ran = []
+
+    def fake_run(case, cmd):
+        name = next(k for k, v in regen.REFERENCES.items() if v == cmd)
+        ran.append(name)
+        return SimpleNamespace(stdout=answers[name])
+
+    monkeypatch.setattr(regen.harness, "run_case", fake_run)
+    monkeypatch.setattr(regen.harness, "read_decisions", lambda: {})
+    monkeypatch.setattr(regen.harness, "read_overrides", lambda: {"utf8/x": "pyawk's choice"} if overridden else {})
+    assert regen.vote([_utf8_case(tmp_path, recorded)]) == problems
+    assert "mawk" not in ran
+
+
+def test_utf8_cases_are_regenerated_with_gawk() -> None:
+    regen = _load_regen()
+    utf8 = SimpleNamespace(id="utf8/x")
+    basic = SimpleNamespace(id="basic/x")
+    assert regen.reference_command(utf8, regen.REFERENCES["mawk"]) == regen.REFERENCES["gawk"]
+    assert regen.reference_command(basic, regen.REFERENCES["mawk"]) == regen.REFERENCES["mawk"]
+    # An explicitly chosen awk is used as it is.
+    assert regen.reference_command(utf8, ["/bin/other"]) == ["/bin/other"]

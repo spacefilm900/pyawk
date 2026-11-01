@@ -11,6 +11,12 @@ usage: scripts/regen_golden.py [--awk /usr/bin/mawk] [--check | --vote] [CATEGOR
          the majority answer, and a case where mawk is outvoted needs an
          OVERRIDES entry.
 
+The ``utf8`` category runs in a UTF-8 locale.  mawk works on bytes, so it
+is left out there: those .out files come from gawk --posix (the project
+follows gawk on UTF-8 questions, see DESIGN.md), --vote compares only
+onetrue-awk and gawk, and a case where pyawk deliberately differs from
+gawk is hand-corrected in OVERRIDES.
+
 Cases listed in awk_tests/golden/OVERRIDES have hand-corrected .out files
 (mawk is the outlier there; see DESIGN.md).  They are never rewritten, and
 under --check a difference from mawk is reported as expected, not counted.
@@ -42,6 +48,21 @@ REFERENCES = {
 # command's exit status, as mawk does).
 DECISION_REFERENCE = "mawk"
 
+# What UTF-8 cases are generated with and judged by (see the docstring).
+UTF8_REFERENCE = "gawk"
+
+
+def is_utf8(case: harness.Case) -> bool:
+    return harness.locale_for(case.id) != "C"
+
+
+def reference_command(case: harness.Case, awk: list[str]) -> list[str]:
+    """The awk that writes or checks this case's .out: the chosen one, except
+    that the default (mawk) cannot do UTF-8 cases, so gawk does those."""
+    if is_utf8(case) and awk == REFERENCES["mawk"]:
+        return REFERENCES[UTF8_REFERENCE]
+    return awk
+
 
 def vote(cases: list[harness.Case]) -> int:
     """Print how the references compare on each case; return the problem count.
@@ -54,7 +75,11 @@ def vote(cases: list[harness.Case]) -> int:
     """
     problems = 0
     decisions = harness.read_decisions()
+    overrides = harness.read_overrides()
     for case in cases:
+        if is_utf8(case):
+            problems += vote_utf8(case, overrides)
+            continue
         outputs = {name: harness.run_case(case, cmd).stdout for name, cmd in REFERENCES.items()}
         # Group the references by identical output: {output: [names]}.
         groups: dict[str, list[str]] = {}
@@ -90,6 +115,25 @@ def vote(cases: list[harness.Case]) -> int:
     return problems
 
 
+def vote_utf8(case: harness.Case, overrides: dict[str, str]) -> int:
+    """The vote for one UTF-8 case (mawk has no say): 1 if it is a problem.
+
+    The .out must be gawk's answer, unless the case is hand-corrected in
+    OVERRIDES; a different onetrue-awk answer is reported, not counted.
+    """
+    outputs = {name: harness.run_case(case, REFERENCES[name]).stdout for name in ("onetrue", "gawk")}
+    expected = case.expected() if case.path(".out").exists() else None
+    if case.id in overrides:
+        print(f"KEEP  {case.id}: hand-corrected .out: {overrides[case.id]}")
+        return 0
+    if expected != outputs[UTF8_REFERENCE]:
+        print(f"WRONG {case.id}: .out is not the {UTF8_REFERENCE} answer")
+        return 1
+    if outputs["onetrue"] != expected:
+        print(f"OK    {case.id}: follows {UTF8_REFERENCE}; onetrue differs")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--awk", default="/usr/bin/mawk", help="reference awk command")
@@ -108,7 +152,7 @@ def main() -> int:
     overrides = harness.read_overrides()
     bad = 0
     for case in selected:
-        proc = harness.run_case(case, awk)
+        proc = harness.run_case(case, reference_command(case, awk))
         if proc.returncode != 0:
             print(f"WARN {case.id}: exit {proc.returncode}: {proc.stderr.strip()}")
         if case.id in overrides:
@@ -124,7 +168,12 @@ def main() -> int:
         else:
             case.path(".out").write_text(proc.stdout, encoding="utf-8", errors="surrogateescape")
     action = "checked" if opts.check else "regenerated"
-    print(f"{action} {len(selected)} cases with {opts.awk}" + (f", {bad} differ" if opts.check else ""))
+    # The utf8 cases use gawk when the default mawk was chosen; say so.
+    utf8_cases = [c for c in selected if is_utf8(c)]
+    used = opts.awk
+    if utf8_cases:
+        used += f" ({len(utf8_cases)} utf8 cases with {' '.join(reference_command(utf8_cases[0], awk))})"
+    print(f"{action} {len(selected)} cases with {used}" + (f", {bad} differ" if opts.check else ""))
     return 1 if bad else 0
 
 

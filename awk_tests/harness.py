@@ -30,6 +30,9 @@ test directory by scripts/import_gawk.py.  It uses everything above plus:
   have a ``.stdin`` file and an empty ``.operands`` file (no file names on
   the command line).  Without ``.stdin`` the program gets empty input.
 
+Cases in the ``utf8`` category run with ``LC_ALL=C.UTF-8`` (see LOCALES),
+all others with ``LC_ALL=C``.
+
 Two more files are available to every case (used by the ``environ``, ``io``
 and ``nextfile`` golden categories):
 
@@ -59,8 +62,18 @@ GOLDEN = ROOT / "golden"
 REPO = ROOT.parent
 CATEGORIES = (
     "basic", "fields", "patterns", "control", "arrays", "builtins", "functions", "ranges", "one_liners",
-    "environ", "io", "nextfile", "regex_posix",
+    "environ", "io", "nextfile", "regex_posix", "utf8",
 )
+# The locale (LC_ALL) each category runs in; every other category runs in
+# the C locale, where a character is a byte.  The ``utf8`` cases test
+# pyawk's character mode, so they run in a UTF-8 locale.
+LOCALES = {"utf8": "C.UTF-8"}
+
+
+def locale_for(case_id: str) -> str:
+    """The LC_ALL value for the case ``CATEGORY/NAME``."""
+    # ``partition("/")[0]`` is the text before the first "/": the category.
+    return LOCALES.get(case_id.partition("/")[0], "C")
 ONETRUE = ROOT / "onetrue"
 GAWK = ROOT / "gawk"
 # The imported suites (not under golden/), keyed by category name.
@@ -233,7 +246,8 @@ def run_case(case: Case, awk: list[str], timeout: float = 20.0) -> subprocess.Co
     """Run one case with the given awk command and capture its output.
 
     PYTHONPATH lets ``python -m pyawk`` find the package without installing
-    it; LC_ALL=C gives every awk the same, simple locale.  stdin is the
+    it; LC_ALL=C gives every awk the same, simple locale (C.UTF-8 for the
+    ``utf8`` category, see LOCALES).  stdin is the
     case's ``.stdin`` data if it has one, and otherwise empty, so a program
     that wrongly reads it cannot hang.  Inherited ``PYAWK_T_*`` variables are
     dropped and ``.environ`` lines are added to the environment.
@@ -249,7 +263,7 @@ def run_case(case: Case, awk: list[str], timeout: float = 20.0) -> subprocess.Co
     # their output depend on who runs them.
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYAWK_T_")}
     env["PYTHONPATH"] = str(REPO) + os.pathsep + env.get("PYTHONPATH", "")
-    env["LC_ALL"] = "C"
+    env["LC_ALL"] = locale_for(case.id)
     env.update(case.extra_env())
     data = case.stdin_data()
     if not case.sandboxed:
