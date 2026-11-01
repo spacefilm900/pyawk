@@ -589,7 +589,15 @@ class Interpreter:
             if self.reader is None and not self._open_next_input():
                 return None
             assert self.reader is not None
-            rec = self.reader.read_record(self.str_of(self.vars["RS"]))
+            rs = self.vars["RS"]
+            if type(rs) is not str:
+                rs = self.str_of(rs)
+            # A one-character RS (usually newline) is by far the most common
+            # case, so call its reader directly rather than via read_record.
+            if len(rs) == 1:
+                rec = self.reader._read_char(rs)
+            else:
+                rec = self.reader.read_record(rs)
             if rec is not None:
                 return rec
             if self.reader is not self.io.stdin_reader:
@@ -703,6 +711,23 @@ class Interpreter:
         passes it, since all three reference awks split strings by FS alone.
         """
         if fs == " ":
+            # Fast path: Python's own str.split() (no argument) splits at
+            # runs of whitespace and drops leading/trailing whitespace, which
+            # is AWK's rule, but its idea of whitespace is wider than AWK's
+            # blank/tab/newline.  For pure-ASCII text the extra characters are
+            # \r \v \f and \x1c-\x1f; if none is present the two agree.
+            # ``in`` on a string is a fast C scan, cheaper than a regex.
+            if (
+                s.isascii()
+                and "\r" not in s
+                and "\v" not in s
+                and "\f" not in s
+                and "\x1c" not in s
+                and "\x1d" not in s
+                and "\x1e" not in s
+                and "\x1f" not in s
+            ):
+                return s.split()
             return _WS_FIELDS_RE.findall(s)
         if s == "":
             return []

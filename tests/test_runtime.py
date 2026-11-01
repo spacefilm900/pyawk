@@ -276,3 +276,23 @@ def test_substitute_paths(
     pattern: str, repl: str, text: str, global_: bool, expected: tuple[str, int]
 ) -> None:
     assert substitute(compile_ere(pattern), repl, text, global_) == expected
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # Plain ASCII blanks, tabs and newlines take str.split()'s fast path.
+        ("  a\tb  c \n", "3:[a][b][c]"),
+        ("", "0:"),
+        ("   ", "0:"),
+        # Characters Python counts as whitespace but AWK does not must stay
+        # inside fields (these take the regular-expression path).
+        ("a\rb c", "2:[a\rb][c]"),
+        ("x\vy\fz", "1:[x\vy\fz]"),
+        ("q\x1cr s", "2:[q\x1cr][s]"),
+        ("\u00e9 \u00a0z", "2:[\u00e9][\u00a0z]"),
+    ],
+)
+def test_default_fs_split(text: str, expected: str) -> None:
+    prog = 'BEGIN { n = split(s, a); r = n ":"; for (i = 1; i <= n; i++) r = r "[" a[i] "]"; print r }'
+    assert awk(prog, assignments=[("s", text)]) == (expected + "\n", 0)
