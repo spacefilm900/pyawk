@@ -105,6 +105,71 @@ def test_ere_errors(ere: str) -> None:
         compile_ere(ere)
 
 
+# ------------------------------------------------- settled decisions
+# Each case is a choice where POSIX leaves the answer undefined or
+# unspecified (see DESIGN.md, "Regex decisions"); the comment gives what
+# the references do.  match() positions as (start, end) or None.
+@pytest.mark.parametrize(
+    "ere, text, expected",
+    [
+        # [a-c-e]: undefined.  mawk reads a-c, "-", e; onetrue-awk reads
+        # a-e; gawk rejects it.  A complete split: we keep mawk's reading.
+        ("[a-c-e]", "d", None),
+        ("[a-c-e]", "-", (0, 1)),
+        ("[a-c-e]", "e", (0, 1)),
+        ("[a-c-e]", "b", (0, 1)),
+        # POSIX's own examples: "-" as a range end (all agree).
+        ("[%--]", "+", (0, 1)),
+        ("[%--]", ".", None),
+        ("[--@]", "5", (0, 1)),
+        ("[--@]", ",", None),
+        # Adjacent duplication symbols: undefined.  mawk and gawk read
+        # a{1}{2} as (a{1}){2} and a{2}* as (a{2})* (onetrue-awk fails on
+        # the first and reads the second as a{2,}).
+        ("a{1}{2}", "aac", (0, 2)),
+        ("a{1}{2}", "a", None),
+        ("a{2}*", "aaa", (0, 2)),
+        ("a{2}*", "a", (0, 0)),
+        # a*+, a**, a?* all mean a* (all three agree).
+        ("a*+", "aaa", (0, 3)),
+        ("a**", "aaa", (0, 3)),
+        ("a?*", "aaa", (0, 3)),
+        # ^ after other items is still an anchor (POSIX; mawk and gawk;
+        # onetrue-awk rejects b*^a).
+        ("b*^a", "aac", (0, 1)),
+        ("b*^a", "xaa", None),
+        ("(a|^b)c", "bc", (0, 2)),
+        ("(a|^b)c", "xbc", None),
+    ],
+)
+def test_regex_decisions(ere: str, text: str, expected: tuple[int, int] | None) -> None:
+    assert span(ere, text) == expected
+
+
+@pytest.mark.parametrize(
+    "ere",
+    [
+        # Empty alternatives: undefined.  onetrue-awk rejects them all,
+        # gawk accepts them all, mawk rejects most (and gets a(|b)c and
+        # x(a|)b wrong).  One consistent rule: always an error.
+        "(a|)b",
+        "a(|b)c",
+        "x(a|)b",
+        "a|b|",
+        # A range whose end comes before its start: POSIX allows "matches
+        # nothing" or "invalid".  gawk says invalid; mawk matches some
+        # characters and onetrue-awk matches the empty string, neither of
+        # which POSIX allows.  We say invalid.
+        "[z-a]",
+        # [a--@]: POSIX allows "invalid" or "the same as @".
+        "[a--@]",
+    ],
+)
+def test_regex_decisions_errors(ere: str) -> None:
+    with pytest.raises(AwkRuntimeError):
+        compile_ere(ere)
+
+
 # ------------------------------------------------- engine choice
 @pytest.mark.parametrize("ere", ["abc", "a[bc]d", "ab*", "a.c*", "^ab+$", "(ab|cd)x*", "a|b|c", "a*ab", "a{1,2}a"])
 def test_safe_patterns_use_python(ere: str) -> None:

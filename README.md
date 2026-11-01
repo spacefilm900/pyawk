@@ -23,7 +23,7 @@ assignments processed when reached, as in POSIX. Exit status is the value of
 | Program | `BEGIN`, `pattern { action }`, `pattern`, `{ action }`, `start, end [{ action }]`, `END` (multiple of each), `function` definitions |
 | Functions | `function name(params) { ... }` anywhere in the program (calls may precede the definition), `name(args)` calls (no space before `(`), `return [expr]`, extra parameters as local variables, scalars by value, arrays by reference (an unused variable passed in becomes an array if the function uses it as one), recursion (depth > 10000) |
 | Patterns | any expression, `/ere/`, `!`, `&&`, `\|\|`, `~`, `!~`; range patterns `start, end` (each rule keeps its own state, which carries over from one input file to the next; a newline may follow the comma) |
-| Statements | `if/else`, `while`, `do-while`, `for(;;)`, `for (k in a)`, `break`, `continue`, `next`, `nextfile` (POSIX 2024; not in BEGIN/END or a function), `exit [n]`, `return [expr]`, `print`, `printf`, `delete a[k]`, `delete a`, `{ }` blocks |
+| Statements | `if/else`, `while`, `do-while`, `for(;;)`, `for (k in a)`, `break`, `continue`, `next` (not in BEGIN/END; allowed in a function, as POSIX says), `nextfile` (POSIX 2024; not in BEGIN/END or a function), `exit [n]`, `return [expr]`, `print`, `printf`, `delete a[k]`, `delete a`, `{ }` blocks |
 | Fields | `$0`, `$n`, `$expr`, field assignment rebuilds `$0` with `OFS`, `NF` assignment truncates/extends |
 | Variables | `NR FNR NF FS OFS RS ORS FILENAME ARGC ARGV CONVFMT OFMT RSTART RLENGTH SUBSEP` (+ `ENVIRON`) |
 | FS | `" "` (default whitespace), single character, a regex when longer, `""` splits characters |
@@ -104,13 +104,24 @@ As of 2026-11-01 (`.venv/bin/python -m pytest -q`, `scripts/run_golden.py`):
 
 | suite | pass | fail | skip |
 |---|---|---|---|
-| pytest (all) | 1472 | 0 | 121 |
+| pytest (all) | 1677 | 0 | 122 |
 | own golden corpus (incl. regex_posix 8) | 137 | 0 | 0 |
 | imported onetrue-awk | 215 | 0 | 9 |
 | imported gawk | 192 | 0 | 112 |
-| regex differential (551 patterns, 13 142 lines) | 13 142 | 0 | 108 split/untested |
+| regex differential (570 patterns, 13 503 lines) | 13 503 | 0 | 108 split/untested |
 
 All `KNOWN_FAILURES` lists are empty.
+
+### Undefined behaviour and parse-time errors
+
+Where POSIX leaves a behaviour undefined, unspecified or
+implementation-defined, pyawk follows POSIX's preference if it has one,
+otherwise the majority of onetrue-awk, `gawk --posix` and mawk. Every
+such choice is recorded, with what each reference does, in DESIGN.md
+("Parse-time errors", "Regex decisions", "I/O decisions") and pinned by
+a test. Mistakes the references reject before running (`next` in BEGIN,
+`substr("a")`, `split(s, 3)`, `sub(/a/, "b", "c")`, a stray `(a, b)`) are
+syntax errors in pyawk too, even in code that never runs.
 
 ### Regular expressions
 
@@ -126,7 +137,7 @@ mawk, onetrue-awk and gawk --posix, run with LC_ALL=C.
 .venv/bin/python scripts/regex_fuzz.py --verify-safety 1000  # check the fast-path rule exhaustively
 ```
 
-Rules, overrides and the open decisions are in DESIGN.md ("Regular expressions").
+Rules, overrides and the decisions on constructs POSIX leaves undefined are in DESIGN.md ("Regular expressions", "Regex decisions").
 
 ### Benchmarks
 

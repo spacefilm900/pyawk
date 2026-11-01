@@ -230,3 +230,13 @@ def test_close_of_stdin_read_by_getline_uses_it_up(name: str) -> None:
     prog = f'BEGIN {{ getline x < "{name}"; print x, close("{name}")'
     prog += f'; print (getline y < "{name}"); print (getline z) }} {{ print "main", $0 }}'
     assert awk(prog, "1\n2\n3\n") == ("1 0\n0\n0\n", 0)
+
+
+def test_all_names_for_stdin_share_one_reader() -> None:
+    # getline < "-", getline < "/dev/stdin" and the main input all read the
+    # same standard input, line after line (onetrue-awk).  mawk and gawk
+    # give "1" and two empty values here: each name gets its own buffer,
+    # and the first one swallows the whole pipe.  That loss depends on
+    # buffer sizes, so we do not copy it (see DESIGN.md).
+    prog = 'BEGIN { getline a < "-"; getline b < "/dev/stdin"; getline c; print a, b, c }'
+    assert awk(prog, "1\n2\n3\n") == ("1 2 3\n", 0)

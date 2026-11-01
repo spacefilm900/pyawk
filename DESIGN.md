@@ -155,9 +155,44 @@ $                                   ( grouping )
   `++`/`--` is a syntax error.
 * Context checks while parsing: `return` only inside a function body,
   `break`/`continue` only inside a loop (`loop_depth`, reset to 0 for a
-  function body, so a loop in the caller does not count), `next` not inside
-  a function, `nextfile` not inside a function or a BEGIN/END action
-  (`in_special` records which of BEGIN/END is being parsed). All are syntax errors, as in the reference awks.
+  function body, so a loop in the caller does not count), `next` and
+  `nextfile` not in a BEGIN/END action (`in_special` records which of
+  BEGIN/END is being parsed), and `nextfile` not inside a function. All
+  are syntax errors, as in the reference awks (see "Parse-time errors"
+  below). `next` *is* allowed in a function: POSIX restricts it only
+  when "invoked in a BEGIN or END action", and gawk agrees. The function
+  body's NEXT signal becomes a `NextFromFunction` exception (the call may
+  be inside an expression), which the main loop catches to skip the
+  record; from BEGIN or END it is a run-time error, as in gawk.
+* Builtin calls: the argument count is checked against `builtins.ARITY`
+  (`sprintf()` with no format included); `split`'s second argument must
+  be a plain name; the third argument of `sub`/`gsub` must be a variable,
+  element or field and not parenthesised (`(x)` is a value in all three
+  references; `parse_call_args` records the first token of each argument
+  to tell `x` from `(x)`, which make the same tree).
+
+### Parse-time errors
+
+Mistakes the references reject while parsing, so the program never
+starts, even when the faulty code could never run (`if (0) ...`).
+Decided by POSIX where it is clear, otherwise by the majority of
+onetrue-awk, gawk --posix and mawk:
+
+| Mistake | POSIX | onetrue | gawk --posix | mawk | pyawk |
+|---|---|---|---|---|---|
+| `next` in BEGIN/END | undefined | run-time error | parse error | parse error | parse error |
+| `nextfile` in BEGIN/END | undefined | run-time error | parse error | parse error | parse error |
+| `next` in a function | allowed (only "invoked in BEGIN or END" is undefined) | parse error | allowed; fatal if called from BEGIN/END | parse error | allowed (POSIX); run-time error if called from BEGIN/END |
+| `nextfile` in a function | undefined | parse error | allowed | parse error | parse error |
+| `(a, b)` not before `in`, not a print list, or `((a, b))` | grammar does not allow it | parse error | parse error | parse error | parse error |
+| wrong builtin argument count (`substr("a")`, `index(1)`, `close()`, `sprintf()`, `match(s, r, m)`) | grammar / function definitions | parse error | parse error | parse error | parse error |
+| wrong count for `length(1, 2)`, `rand(1)`, `int()`, `atan2(1)`, `sin()`, `fflush(1, 2)`, `srand(1, 2)` ... | function definitions | warning only | parse error | parse error | parse error |
+| `split(s, x[1])`, `split(s, 3)`, `split(s, (a))` | "array" argument | parse error | run-time error | parse error | parse error |
+| `sub(/a/, "b", "c")`, `1 + 2`, `x y`, `(x)`, `x++`, `length` as target | undefined | parse error | parse error for `x y`, `(x)`, `length`; else runs | parse error | parse error |
+
+Left as run-time errors because only mawk rejects them while parsing:
+a bare `printf`, a call of an undefined function, and scalar/array
+misuse (`x = 1; x[1] = 2`, a local array assigned as a scalar).
 * Function definitions go into `Program.functions` (name → `Function`).
   Because a function may be used before it is defined, some checks run
   after the whole program is parsed (`Parser.check_functions`), using the
@@ -321,7 +356,7 @@ too deep" instead of a crash.
 | parameter named like another function (POSIX forbids) | allowed | error | allowed | syntax error (POSIX + gawk; *not* the majority) |
 | special variable as a parameter (POSIX forbids) | only `NF` rejected | all rejected | `NF FS RS CONVFMT OFMT` rejected | all rejected (POSIX + gawk; could be relaxed) |
 | special variable as a function name | allowed | error | error | syntax error |
-| `next` inside a function | syntax error | allowed | syntax error | syntax error |
+| `next` inside a function | syntax error | allowed | syntax error | allowed (POSIX; see "Parse-time errors") |
 | more arguments than parameters | warning, runs | warning, runs | fatal | warning on stderr, runs (extras are evaluated) |
 | call of an undefined function | error when called | error when called | error at parse | runtime error when called |
 | scalar variable passed, used as an array in the callee | runs | error | error | runtime error |
@@ -441,13 +476,15 @@ references run with LC_ALL=C):
   * `{n` with no closing `}`, and `{3,2}`, are errors.
 * Repeat operators:
   * An operator applies to everything before it: `a{2}+` is `(a{2})+`
-    (mawk and gawk; onetrue-awk reads it as `a{2,}`), and `a+?` is `(a+)?`.
+    (mawk and gawk; onetrue-awk reads it as `a{2,}`), and `a+?` is `(a+)?`
+    (mawk and onetrue-awk; but see the POSIX 2024 note under "Regex
+    decisions").
   * An operator with nothing to repeat is an error (`*a`, `(+a)`, `a|?b`),
     except straight after `^`: `^+` is `^`, and `^*`/`^?` match the empty
     string.
 * Alternatives and groups:
-  * An empty alternative is an error (`a|`, `|a`, `(|b)`, `a(|b)c`; see the
-    decisions below). `()` is allowed and matches the empty string.
+  * An empty alternative is an error (`a|`, `|a`, `(|b)`, `a(|b)c`; see
+    "Regex decisions" below). `()` is allowed and matches the empty string.
   * An unmatched `(` is an error; an unmatched `)` is a literal.
 * Anchors: `^` and `$` are anchors anywhere in the pattern (`x^y` and
   `a$b` can never match). `$` means the very end (`\Z`, not Python's `$`,
@@ -469,7 +506,7 @@ references run with LC_ALL=C):
     range end. A multi-character name (`[.ab.]`, `[.space.]`) is an error.
   * An unterminated bracket and a reversed range (`[z-a]`) are errors.
 
-**Overrides and open decisions.**
+**Overrides.**
 * *Overrides.* The differential record uses one reference's answer instead
   of the vote for a few patterns, listed with reasons in
   `regex_corpus.OVERRIDES`:
@@ -483,25 +520,38 @@ references run with LC_ALL=C):
     accepted by the other two awks. One of the two is not tested at all,
     because gawk's `split()` is also wrong on it: `split("ab", A, /x*^/)`
     gives "b".
-  * `a(|b)c` uses onetrue-awk's answer (error).
-* *Empty alternatives (open decision).* mawk accepts an empty alternative
-  in some positions (`a(|b)c`, `x(a|)b`) and rejects it in others (`a|`,
-  `(|b)`, `(a|)b`). Where it accepts one, it misparses it: for
-  `x(a|)b` it reports a match in "abc". onetrue-awk always rejects empty
-  alternatives and gawk always accepts them. pyawk rejects them everywhere,
-  which keeps one consistent rule. Accepting them as gawk does would be the
-  other reasonable choice.
-* *Three-way splits* (not tested; pyawk's choice in brackets):
-  * `[z-a]`/`[b-a]`: mawk matches nothing, onetrue-awk matches the empty
-    string, gawk rejects it. pyawk rejects it (gawk). This is also why the
-    imported onetrue-awk tests t.gsub4 and t.split3 and gawk's regex3minus
-    stay skipped.
-  * `[a-c-e]`: mawk reads it as a–c, `-`, `e`; onetrue-awk differs; gawk
-    rejects it. pyawk follows mawk.
-  * `a{1}{2}`: mawk and gawk give different answers, and onetrue-awk
-    rejects it. pyawk follows gawk (`(a{1}){2}`).
-  * Five random patterns with `^` after other items: onetrue-awk rejects
-    them and mawk reports wrong lengths. pyawk follows gawk.
+  * `a(|b)c` uses onetrue-awk's answer (error; see the decisions below).
+* `[z-a]`, `[a-c-e]` and the five random `^` patterns are not in the
+  differential record (no majority); they are pinned by
+  `test_regex_decisions` in `tests/test_regex_engine.py` instead.
+
+**Regex decisions.** Where POSIX leaves a construct undefined or
+unspecified, pyawk takes the majority of the three references; where
+they split three ways, the most defensible answer, flagged below. Each
+row is pinned by `test_regex_decisions` / `test_regex_decisions_errors`
+in `tests/test_regex_engine.py` (references run with LC_ALL=C):
+
+| Construct | POSIX (XBD 9) | onetrue | gawk --posix | mawk | pyawk |
+|---|---|---|---|---|---|
+| empty alternative: `a\|`, `\|a`, `(\|b)`, `(a\|)b`, `a\|\|b` | undefined (9.4.7) | error | accepted | error | error (majority) |
+| empty alternative: `a(\|b)c`, `x(a\|)b` | undefined | error | accepted | accepted, wrong answers (`x(a\|)b` matches "abc") | error: one consistent rule (onetrue + mawk's other positions) |
+| reversed range `[z-a]`, `[b-a]` | unspecified: matches nothing *or* invalid (9.3.5) | matches the empty string | invalid | matches the end points `z` and `a` | invalid. **Three-way split**: gawk's is the only answer POSIX allows. Also why onetrue t.gsub4/t.split3 and gawk regex3minus stay skipped |
+| `[a--@]` (`a` after `-`) | invalid *or* the same as `@` (9.3.5) | `@` | invalid | wrong (`a`, `-`, `5` match) | invalid: allowed, and the same rule as `[z-a]` |
+| `[a-c-e]` | undefined (9.3.5) | a–e (`d` matches, `-` does not) | invalid | a–c, `-`, `e` | a–c, `-`, `e`. **Three-way split**: mawk's reading follows the rule that `-` after a range is literal, as at the end of a bracket |
+| `a{1}{2}`, `(a){1}{2}` | undefined (adjacent duplication symbols) | "out of space" | `(a{1}){2}` | same as gawk | `(a{1}){2}` (majority) |
+| `a{1,2}{2}` | undefined | wrong | `(a{1,2}){2}` | wrong on "aa" | gawk (the only consistent reading; mawk and onetrue disagree with each other) |
+| `a{2}+`, `a{2}*` | undefined | `a{2,}` | `(a{2})+` | `(a{2})+` | `(a{2})+` (majority) |
+| `a*+`, `a**`, `a?*` | undefined | `a*` | `a*` | `a*` | `a*` (all agree) |
+| `^` after other items (`b*^a`, `(a\|^b)c`, five random patterns) | an anchor anywhere (9.4.9: clear) | error | anchor | anchor, wrong lengths on the random five | anchor (POSIX) |
+| `a+?`, `a*?` (POSIX 2024 minimal repetition) | **clear**: `?` after a repeat makes it leftmost-*shortest* | `(a+)?` | shortest (`match("aaaaa", /a+?/)` gives 1,1) | `(a+)?` | `(a+)?`. **Open** (see below) |
+
+*Open: POSIX 2024 minimal repetition.* POSIX.1-2024 added `*?`, `+?`,
+`??` and `{m,n}?` to EREs. gawk 5.4 implements them even with --posix;
+mawk and onetrue-awk (and pyawk) still read `a+?` as `(a+)?`. POSIX is
+clear, so by the project's rule pyawk should follow it, but it is a new
+matching mode for the engine (shortest instead of longest for that item,
+in the automata as well as the Python path), so it is left for the
+user to decide.
 * *Imported gawk test regrange.* It now runs with gawk's `.ok`
   (`import_gawk.REGEX_POSIX`). The vote was split only on collating symbols
   in ranges.
@@ -724,7 +774,7 @@ and new code: regex 0.565 / 0.565–0.570 s, gsub 0.829–0.841 /
 
 ## Test status
 
-pytest: 1547 passed, 122 skipped. Golden summaries: own corpus 137/137
+pytest: 1677 passed, 122 skipped. Golden summaries: own corpus 137/137
 (nine v1.0 categories with 99 cases, plus environ 5, io 18, nextfile 7 and
 regex_posix 8), onetrue-awk 215 pass / 9 skip, gawk 192 pass / 112 skip,
 no failures and empty `KNOWN_FAILURES` lists (2026-11-01, `enhancements`
@@ -732,7 +782,7 @@ branch). The regex differential record (570 patterns, 13 503 input lines)
 has no mismatches. v1.0 had 744 / 99 / 215 / 190. The extra gawk cases
 are close_status (see `close()` above) and regrange (see "Regular
 expressions"). Most of the pytest growth is the regex differential test,
-which has one case per pattern and category, plus 61 engine tests and 57
+which has one case per pattern and category, plus 86 engine tests and 57
 backtracking tests.
 
 Semantics settled by those fixes (all three references agree unless noted;
@@ -759,7 +809,7 @@ otherwise the majority wins):
 Work on the `enhancements` branch after v1.0, in this order: ENVIRON, an
 audit of the I/O features, then `nextfile`. Every behaviour below was run
 under pyawk and the three references (mawk, onetrue-awk, `gawk --posix`);
-the majority wins, and two-way splits are listed under "Open decisions".
+the majority wins; the splits are recorded under "I/O decisions".
 
 ### Test infrastructure
 
@@ -848,31 +898,28 @@ files still happen.
 Golden category `nextfile` (7 cases); unit tests in `tests/test_io.py` and
 `tests/test_parser.py`.
 
-### Open decisions
+### I/O decisions
 
-Two-way or three-way splits where pyawk made a choice that may deserve a
-second look:
+Each was run under all three references; POSIX's stance comes first.
+All are covered by tests (`tests/test_io.py`, golden `environ`, `io` and
+`nextfile`).
 
-* `close("/dev/stdout")` / `close("/dev/stderr")`: three different answers;
-  pyawk returns -1 (not open as a redirection) and keeps writing.
-* Several commands still open at exit: the order in which they finish is
-  nondeterministic in every awk; tests close them explicitly.
-* `getline < "-"` then `getline < "/dev/stdin"` in BEGIN with no operands:
-  mawk and gawk lose lines to their own buffering; pyawk shares one reader.
-* onetrue-awk flushes stdout before every getline; not adopted (mawk, gawk
-  do not).
-* ENVIRON values like `0x1A`: `gawk --posix` treats them as numbers, mawk
-  and onetrue-awk (and pyawk) do not.
-* `close()` of a command returns its exit status: user decision (mawk and
-  default gawk; onetrue-awk and `gawk --posix` return 0).
-* `nextfile` on stdin (above): mawk, given a large regular file as
-  stdin, continues from what it has buffered; pyawk always reads nothing.
-* `nextfile` in a function: gawk allows it; pyawk follows mawk and
-  onetrue-awk.
-* `cmd | getline x + 1` and friends: onetrue-awk differs (above).
-* Not changed, out of scope: `next` in BEGIN/END is still a run-time
-  error in pyawk (like onetrue-awk, after earlier output is printed);
-  mawk and gawk reject it at parse time, as pyawk now does for `nextfile`.
+| Question | POSIX | onetrue | gawk --posix | mawk | pyawk |
+|---|---|---|---|---|---|
+| `close("/dev/stdout")` / `close("/dev/stderr")` after printing to it | `close` returns 0 on success; the special names are not in POSIX awk | 0; stdout is closed (later output lost) | 0; output continues | 0; stdout is closed | 0; output continues (flushes). **Split** on whether stdout survives: losing it is never useful, so gawk |
+| `close()` of a special name never used | -1 for "not open" | 0 (`/dev/stderr`); closes fd 1 for `/dev/stdout` | -1 | 0 / closes fd 1 | -1 (gawk; consistent with any other name not open) |
+| `close("-")`, `close("/dev/stdin")` after `getline <` it | silent | 0; stdin used up | 0; stdin used up | 0 (crashes on `/dev/stdin`) | 0; later reads of stdin find nothing (all agree) |
+| `getline < "-"`, then `< "/dev/stdin"`, then plain getline | one standard input | consecutive lines | lines lost to separate buffers | lines lost | consecutive lines: the loss depends on buffer sizes, so not copied (onetrue) |
+| ENVIRON value `0x1A` (strnum?) | implementation-defined whether hex is recognised | string | number | string | string (majority) |
+| `nextfile` on standard input, then `-` or `getline < "-"` | silent | carries on reading | nothing more | nothing more (except from its buffer on a big regular file) | nothing more (majority); stdin is not drained |
+| `nextfile` in BEGIN/END, in a function | undefined | see "Parse-time errors" | | | syntax error (majority) |
+| `cmd \| getline x + 1` | `(cmd \| getline x) + 1` (grammar) | target `x + 1`; `* / % ^` rejected | POSIX | POSIX | POSIX (see Parser) |
+| stdout flushed before every getline | not required | yes | no | no | no (majority; output order with a terminal is unaffected) |
+| several commands still open at exit | order unspecified | | | | nondeterministic in every awk; tests close them explicitly |
+
+Left to the user: `close()` of a command returns its exit status
+(mawk and default gawk; onetrue-awk and `gawk --posix` return 0), recorded
+in `awk_tests/golden/DECISIONS` as `io/close_status`.
 
 ## Golden corpus and mawk
 
@@ -958,3 +1005,10 @@ gives `""`. Tests: `tests/test_runtime.py`, golden `builtins/substr_clamp`
   `gawk --posix` on the benchmark workloads (gawk is itself slow on the
   regex and gsub ones, where pyawk is only 1.1× and 1.4× behind; see
   "Performance").
+* `%x`, `%o`, `%u` (and `%c`) of a value outside the 64-bit range, such
+  as `printf "%x", -2^70`: left alone on purpose. awk converts the number
+  to a C integer first, and C leaves an out-of-range conversion
+  undefined, so the references disagree completely (mawk `1`, onetrue-awk
+  `8000000000000000`, gawk switches to `%g`). pyawk prints the exact
+  value in two's complement. Values that fit (`printf "%x", -1` gives
+  `ffffffffffffffff`) agree with all three.
