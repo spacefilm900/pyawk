@@ -300,6 +300,31 @@ onetrue-awk differs for four or more backslashes before `&`, and gawk --posix
 halves runs not followed by `&` (gawk tests backgsub, posix2008sub). In `gsub` an empty match is not allowed directly after a
 previous match (`gsub(/x*/, "-", "abxd")` → `-a-b-d-`).
 
+## Test status
+
+pytest: 706 passed, 123 skipped. Golden summaries: own corpus 99/99,
+onetrue-awk 215 pass / 9 skip, gawk 190 pass / 114 skip, no failures and
+empty `KNOWN_FAILURES` lists (2026-11-01). The last 18 gawk failures were
+fixed except close_status, now a reviewed skip (see `close()` above).
+
+Semantics settled by those fixes (all three references agree unless noted;
+otherwise the majority wins):
+
+* An assignment may be the right operand of `&&`, `||`, `~`, `!~` and the
+  comparisons without parentheses (`a && $0 = $1`); after arithmetic,
+  concatenation or unary operators it is a syntax error.
+* `for (init; test; step)`: init and step may be `print`, `printf` or
+  `delete` (onetrue-awk, gawk; mawk rejects). A bare `printf` prints nothing.
+* `cmd | getline x y` is `(cmd | getline x) y`.
+* `$` with a unary operator takes a unary expression: `$-i++` is
+  `$(-(i++))`; a nested `$` takes its own `++`: `$$a++++` is `$($a++)++`.
+* `^+`, `^*`, `^?` in a regex repeat the anchor (onetrue-awk, gawk; mawk
+  rejects).
+* getline resolves its target before reading, so `getline a[++c] < f`
+  bumps c even at end of file (mawk, gawk; onetrue-awk does not).
+* printf integer conversions follow C flag rules (`%#o`, `%+u`, `%.0d`...).
+* A string assigned to `$0` stays a string, not a strnum.
+
 ## Golden corpus and mawk
 
 `.out` files were generated with **mawk 1.3.4 20250131** (the only awk on the

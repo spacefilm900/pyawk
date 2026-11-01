@@ -91,5 +91,18 @@ scripts/import_gawk.py      # re-import (needs /workspace/refs/src/gawk-5.4.1/te
 scripts/run_golden.py gawk --diff
 ```
 
+### Current test status
+
+As of 2026-11-01 (`.venv/bin/python -m pytest -q`, `scripts/run_golden.py`):
+
+| suite | pass | fail | skip |
+|---|---|---|---|
+| pytest (all) | 706 | 0 | 123 |
+| own golden corpus | 99 | 0 | 0 |
+| imported onetrue-awk | 215 | 0 | 9 |
+| imported gawk | 190 | 0 | 114 |
+
+Both `KNOWN_FAILURES` lists are empty.
+
 See [DESIGN.md](DESIGN.md) for architecture, semantics decisions and the list
 of places where mawk (the reference used for `.out`) differs from POSIX.
