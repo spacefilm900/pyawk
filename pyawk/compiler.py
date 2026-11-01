@@ -281,6 +281,8 @@ class Compiler:
         return block
 
     def _s_ExprStmt(self, node: ast.ExprStmt) -> StmtFn:
+        if type(node.expr) is ast.Assign and (stmt := self._assign_stmt(node.expr)) is not None:
+            return stmt
         e = self.expr(node.expr, value_used=False)
         if type(node.expr) is ast.IncDec:
             # ``i++`` compiled with value_used=False already returns None,
@@ -291,6 +293,77 @@ class Compiler:
             e()
 
         return expr_stmt
+
+    def _assign_stmt(self, node: ast.Assign) -> StmtFn | None:
+        """The statements ``x = e``, ``x += e``, ``a[k] = e``, ``a[k] += e``
+        (and the other ``op=``) as closures that return None, so they can
+        be statements directly, without the expr_stmt wrapper.  Same
+        evaluation order as the expression forms in _e_Assign.  Returns
+        None for other targets, which keep the general path."""
+        target, tt = node.target, type(node.target)
+        op = node.op
+        if tt is ast.Var and self._is_plain_global(target.name):  # type: ignore[attr-defined]
+            name, vars_ = target.name, self.vars  # type: ignore[attr-defined]
+            arrays, new_global = self.it.arrays, self.it.new_global_scalar
+            value = self.expr(node.value)
+            if op == "=":
+
+                def assign_global_stmt() -> None:
+                    v = value()
+                    if name in arrays:
+                        raise AwkRuntimeError(f"can't assign to {name}; it's an array name")
+                    vars_[name] = v
+
+                return assign_global_stmt  # type: ignore[return-value]
+            if op == "+=":
+
+                def add_global_stmt() -> None:
+                    # ``total += x``: the commonest compound assignment.
+                    rhs = value()
+                    if type(rhs) is not float:
+                        rhs = to_num(rhs)
+                    try:
+                        cur = vars_[name]
+                    except KeyError:
+                        cur = new_global(name)  # raises if name is an array
+                    vars_[name] = (cur if type(cur) is float else to_num(cur)) + rhs  # type: ignore[operator]
+
+                return add_global_stmt  # type: ignore[return-value]
+            fn = ARITH[op[0]]
+
+            def assign_op_global_stmt() -> None:
+                rhs = value()
+                if type(rhs) is not float:
+                    rhs = to_num(rhs)
+                try:
+                    cur = vars_[name]
+                except KeyError:
+                    cur = new_global(name)
+                vars_[name] = fn(cur if type(cur) is float else to_num(cur), rhs)  # type: ignore[arg-type]
+
+            return assign_op_global_stmt  # type: ignore[return-value]
+        if tt is ast.Index:
+            get_arr, key = self.array(target.name), self.subscript(target.subs)  # type: ignore[attr-defined]
+            value = self.expr(node.value)
+            if op == "=":
+
+                def assign_elem_stmt() -> None:
+                    arr = get_arr()
+                    k = key()
+                    arr[k] = value()
+
+                return assign_elem_stmt  # type: ignore[return-value]
+            fn = ARITH[op[0]]
+
+            def assign_op_elem_stmt() -> None:
+                arr = get_arr()
+                k = key()
+                rhs = to_num(value())
+                cur = arr.get(k, UNINIT)
+                arr[k] = fn(cur if type(cur) is float else to_num(cur), rhs)  # type: ignore[arg-type]
+
+            return assign_op_elem_stmt  # type: ignore[return-value]
+        return None
 
     def _output_stream(self, node: ast.Print | ast.Printf) -> Callable[[], Any]:
         """Closure giving the stream a print/printf writes to."""
