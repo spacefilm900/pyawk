@@ -18,7 +18,7 @@ program runs; the runtime then only calls those functions.
 | `lexer.py` | tokens, regex-vs-division, newline rules, string escapes |
 | `ast.py` | slotted dataclasses for expressions, statements, rules |
 | `parser.py` | recursive-descent parser, one method per precedence level |
-| `regex.py` | POSIX ERE → Python `re` translation, cached compilation (extra module, keeps runtime small) |
+| `regex.py` | POSIX ERE parser; Python `re` for yes/no tests, a leftmost-longest NFA/lazy-DFA engine for match spans; cached compilation |
 | `compiler.py` | `Compiler`: AST → closures (expressions, conditions, statements, function calls, lvalue references) |
 | `runtime.py` | `Interpreter` (main loop, records and fields, variables), record reader, I/O manager |
 | `builtins.py` | builtin functions (each compiles its own call), `printf` formatting, `sub/gsub` engine |
@@ -333,14 +333,148 @@ are syntax errors.
 
 ## Regular expressions
 
-POSIX ERE is translated to Python `re`: bracket expressions are rebuilt
-(`[:alpha:]` etc. classes, leading `]` literal, `[`, `\`, `&`, `~`, `|`
-escaped), `$` → `\Z` (no match before a trailing newline), `.` matches newline
-(DOTALL), `\/` → `/`, awk escapes (`\t`, octal `\101`, `\b`=backspace)
-honoured, unknown letter escapes become literals. Dynamic regex strings are
-compiled the same way and cached with `lru_cache`. Matching is leftmost; the
-Python engine is backtracking (leftmost-*first*), not POSIX leftmost-*longest*
-(see Known issues).
+`regex.py` parses each POSIX ERE into a small syntax tree (character sets,
+concatenation, alternation, repetition, the anchors `^`/`$`, and "empty").
+Everything else is generated from that tree.
+
+**Two engines.** POSIX asks for the *leftmost-longest* match: take the
+first position where a match can start, and the longest match starting
+there. Python's `re` is a backtracking matcher. It finds the same start,
+but its match is the first one its search order reaches, so it can be
+shorter (`match("xabc", /a|ab/)` must give RLENGTH 2, not 1). pyawk
+therefore keeps two compiled forms of each pattern (`_compile`, cached with
+`lru_cache(512)`):
+
+* `compile_ere` gives the Python pattern. It answers every yes/no test
+  (`~`, `!~`, bare `/re/` patterns), where only the start matters, so it is
+  always correct.
+* `compile_span` serves the uses where the extent of the match matters:
+  `match()`, `sub`/`gsub`, regex FS and `split()`, and regex RS.
+  * It returns the same Python pattern when `_safe` proves that Python's
+    match is already the longest. That covers a fixed-length pattern
+    (`abc`, `[0-9]`, `(ab|cd)`), or a fixed-length prefix followed only by
+    single-character items with any repeat operator and anchors
+    (`[0-9]+`, `^ *`, `a.*b`, `x[ab]*y?`). The bench workloads fall in this
+    class.
+  * Otherwise it returns a `LongestPattern`. Python finds the start of the
+    match; a Thompson NFA, run as a lazily built DFA, then finds the
+    longest end from there in one left-to-right pass. DFA states are
+    cached per pattern, and the cache is dropped and rebuilt after 10 000
+    states.
+  * The safety rule is checked by `scripts/regex_fuzz.py --verify-safety`.
+    Every pattern judged safe is compared with the automaton on all strings
+    over {a, b, c} up to length 6. The patterns are exhaustive up to three
+    single-character items, plus random four-item runs and random EREs:
+    24 483 patterns, 0 wrong. A small version runs in
+    `tests/test_regex_engine.py`.
+
+**Parsing rules** (the majority of mawk, onetrue-awk and gawk --posix; all
+references run with LC_ALL=C):
+
+* Intervals:
+  * `{n}`, `{n,}` and `{n,m}` are intervals.
+  * A `{` not followed by a digit is a literal, so `a{,2}` and `a{x` are
+    literal (mawk reads `{,m}` as `{0,m}`; outvoted).
+  * `{n` with no closing `}`, and `{3,2}`, are errors.
+* Repeat operators:
+  * An operator applies to everything before it: `a{2}+` is `(a{2})+`
+    (mawk and gawk; onetrue-awk reads it as `a{2,}`), and `a+?` is `(a+)?`.
+  * An operator with nothing to repeat is an error (`*a`, `(+a)`, `a|?b`),
+    except straight after `^`: `^+` is `^`, and `^*`/`^?` match the empty
+    string.
+* Alternatives and groups:
+  * An empty alternative is an error (`a|`, `|a`, `(|b)`, `a(|b)c`; see the
+    decisions below). `()` is allowed and matches the empty string.
+  * An unmatched `(` is an error; an unmatched `)` is a literal.
+* Anchors: `^` and `$` are anchors anywhere in the pattern (`x^y` and
+  `a$b` can never match). `$` means the very end (`\Z`, not Python's `$`,
+  which also matches before a trailing newline). `.` matches newline.
+* Escapes:
+  * Supported: `\n \t \r \f \v \a`, `\b` (backspace), octal `\ddd`, and hex
+    `\xhh` (one or two digits; mawk and onetrue-awk).
+  * Any other escaped character is itself. This includes `\w`, `\s`, `\d`,
+    `\y`, `\B`, `\<` (gawk's GNU operators are off with --posix).
+  * `\/` is `/`.
+* Bracket expressions:
+  * A leading `]` (after an optional `^`) is a member. `-` is literal first
+    or last, or right after a range (`[a-c-e]` is a–c, `-` and `e`, as in
+    mawk).
+  * Backslash escapes work inside brackets (`[\]]`, `[\\]`, `[\t]`).
+  * Classes: the twelve POSIX `[:class:]` names. Anything else, including
+    gawk's `[:word:]`, is an error, as is a class used as a range end.
+  * In the C locale `[=a=]` and `[.a.]` mean `a`, and `[.-.]` can be a
+    range end. A multi-character name (`[.ab.]`, `[.space.]`) is an error.
+  * An unterminated bracket and a reversed range (`[z-a]`) are errors.
+
+**Overrides and open decisions.**
+* *Overrides.* The differential record uses one reference's answer instead
+  of the vote for a few patterns, listed with reasons in
+  `regex_corpus.OVERRIDES`:
+  * Collating symbols and equivalence classes (17 patterns) use gawk's
+    answer. mawk ignores `[. .]`/`[= =]` and reads them as plain bracket
+    members, and onetrue-awk supports them only as the whole bracket, so
+    their agreement is two bugs.
+  * Two random patterns that the majority rejects use gawk's answer. Each
+    one hits a different bug: mawk rejects `$(` at the start of a branch,
+    and onetrue-awk rejects `^` after other items. Each construct alone is
+    accepted by the other two awks. One of the two is not tested at all,
+    because gawk's `split()` is also wrong on it: `split("ab", A, /x*^/)`
+    gives "b".
+  * `a(|b)c` uses onetrue-awk's answer (error).
+* *Empty alternatives (open decision).* mawk accepts an empty alternative
+  in some positions (`a(|b)c`, `x(a|)b`) and rejects it in others (`a|`,
+  `(|b)`, `(a|)b`). Where it accepts one, it misparses it: for
+  `x(a|)b` it reports a match in "abc". onetrue-awk always rejects empty
+  alternatives and gawk always accepts them. pyawk rejects them everywhere,
+  which keeps one consistent rule. Accepting them as gawk does would be the
+  other reasonable choice.
+* *Three-way splits* (not tested; pyawk's choice in brackets):
+  * `[z-a]`/`[b-a]`: mawk matches nothing, onetrue-awk matches the empty
+    string, gawk rejects it. pyawk rejects it (gawk). This is also why the
+    imported onetrue-awk tests t.gsub4 and t.split3 and gawk's regex3minus
+    stay skipped.
+  * `[a-c-e]`: mawk reads it as a–c, `-`, `e`; onetrue-awk differs; gawk
+    rejects it. pyawk follows mawk.
+  * `a{1}{2}`: mawk and gawk give different answers, and onetrue-awk
+    rejects it. pyawk follows gawk (`(a{1}){2}`).
+  * Five random patterns with `^` after other items: onetrue-awk rejects
+    them and mawk reports wrong lengths. pyawk follows gawk.
+* *Imported gawk test regrange.* It now runs with gawk's `.ok`
+  (`import_gawk.REGEX_POSIX`). The vote was split only on collating symbols
+  in ranges.
+
+**Differential testing.** `awk_tests/regex_corpus.py` holds the corpus:
+the curated categories alternation, nested, quantifiers, intervals,
+brackets, classes, anchors, escapes and empty, plus 279 seeded random EREs.
+Each pattern runs on a set of inputs through one probe program that prints
+`~`, `match()`, `sub`, `gsub` and `split` results.
+
+`scripts/regex_fuzz.py` runs the three references, records the per-line
+majority in `awk_tests/regex_differential.json`, and compares pyawk with
+it. `tests/test_regex_differential.py` checks that record in pytest. The
+golden category `regex_posix` (8 cases) covers the same rules with
+ordinary awk programs.
+
+| | patterns with a mismatch | mismatching lines |
+|---|---|---|
+| before (Python `re` translation) | 105 / 551 | 1065 / 13 160 |
+| after | 0 / 551 | 0 / 13 142 (108 split or untested lines) |
+
+Before, by category (patterns / lines):
+
+| category | patterns | lines |
+|---|---|---|
+| alternation | 9 | 54 |
+| nested | 3 | 19 |
+| quantifiers | 3 | 45 |
+| intervals | 7 | 174 |
+| brackets | 5 | 86 |
+| escapes | 2 | 20 |
+| empty | 8 | 192 |
+| random | 68 | 475 |
+| classes, anchors | 0 | 0 |
+
+All categories are 0 after the change.
 
 `sub`/`gsub` follow awk rules: `&` is the match and backslashes matter only
 in front of `&`. In a run of backslashes followed by `&`, each pair is one
@@ -475,14 +609,41 @@ cheaper frames for functions whose parameters are all scalars; compile a
 printf whose format is a constant string directly at compile time; a fast
 path for `sub`/`gsub` with a constant replacement containing no `&`.
 
+**POSIX regex engine (enhancements).** Same benchmark, before and after
+the leftmost-longest engine (`.bench/regex-before.json`,
+`.bench/regex-after.json`). Times are seconds per 200 000 lines, best of 3.
+print1 and wordcount were re-run best of 7, because their first gap was
+noise.
+
+| workload | before | after | before/after |
+|---|---|---|---|
+| print1 | 0.363 | 0.351 | 1.03× |
+| sum | 0.401 | 0.400 | 1.00× |
+| fields | 1.868 | 1.830 | 1.02× |
+| regex | 0.600 | 0.579 | 1.04× |
+| wordcount | 1.535 | 1.540 | 1.00× |
+| printf | 0.868 | 0.862 | 1.01× |
+| gsub | 0.828 | 0.831 | 1.00× |
+| funcs | 0.474 | 0.456 | 1.04× |
+| begin_loop | 0.804 | 0.792 | 1.02× |
+
+All workloads are within noise, because their patterns are "safe" and still
+run entirely in Python's `re`. The cost shows only for span uses of unsafe
+patterns. For example, `gsub(/(e|er)+[a-z]/, "X")` over 200 000 lines
+takes 0.53 s before and 0.96 s after (about 1.8×); that is the price of
+the correct result.
+
 ## Test status
 
-pytest: 803 passed, 122 skipped. Golden summaries: own corpus 129/129
-(nine v1.0 categories with 99 cases, plus environ 5, io 18, nextfile 7),
-onetrue-awk 215 pass / 9 skip, gawk 191 pass / 113 skip, no failures and
-empty `KNOWN_FAILURES` lists (2026-11-01, `enhancements` branch). v1.0 had
-744 / 99 / 215 / 190; the extra gawk case is close_status (see `close()`
-above).
+pytest: 1472 passed, 121 skipped. Golden summaries: own corpus 137/137
+(nine v1.0 categories with 99 cases, plus environ 5, io 18, nextfile 7 and
+regex_posix 8), onetrue-awk 215 pass / 9 skip, gawk 192 pass / 112 skip,
+no failures and empty `KNOWN_FAILURES` lists (2026-11-01, `enhancements`
+branch). The regex differential record (551 patterns, 13 142 input lines)
+has no mismatches. v1.0 had 744 / 99 / 215 / 190. The extra gawk cases
+are close_status (see `close()` above) and regrange (see "Regular
+expressions"). Most of the pytest growth is the regex differential test,
+which has one case per pattern and category, plus 61 engine tests.
 
 Semantics settled by those fixes (all three references agree unless noted;
 otherwise the majority wins):
@@ -685,11 +846,16 @@ gives `""`. Tests: `tests/test_runtime.py`, golden `builtins/substr_clamp`
 
 ## Known issues / limitations
 
-* Regex matching is leftmost-first (Python), not POSIX leftmost-longest:
-  `match("ab", /a|ab/)` gives RLENGTH 1 instead of 2. Alternations where an
-  earlier branch is a prefix of a later one are affected.
-* Bracket equivalence classes `[=a=]` and collating symbols `[.a.]` are not
-  supported; locale is effectively C/UTF-8.
+* Regex: only the C locale. Characters are compared by code point; there
+  is no multibyte or national-locale collation, so `[=e=]` is just `e`.
+  The match start is always found by Python's backtracking `re`. Nested
+  quantifiers can therefore blow up when there is no match: `(a*)*b`
+  against 30 `a`s takes about 55 s. This was the same before the change.
+  Fix: answer yes/no and start questions with the DFA for such patterns
+  (run a reversed automaton to find the start). The automaton's DFA cache is limited to 10 000 states per
+  pattern; a larger pattern still works but rebuilds states. Span-sensitive
+  uses of patterns that are not provably safe (`gsub(/(e|er)+[a-z]/, ...)`)
+  run about 1.8× slower than the old leftmost-first code.
 * `getline` updating `NF/NR/FNR` follows POSIX; `getline < file` where file is
   the current input is treated as an independent stream.
 * `srand()` seed is time-based in seconds; `rand()` uses Python's Mersenne

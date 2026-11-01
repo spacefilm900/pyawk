@@ -104,12 +104,29 @@ As of 2026-11-01 (`.venv/bin/python -m pytest -q`, `scripts/run_golden.py`):
 
 | suite | pass | fail | skip |
 |---|---|---|---|
-| pytest (all) | 803 | 0 | 122 |
-| own golden corpus | 129 | 0 | 0 |
+| pytest (all) | 1472 | 0 | 121 |
+| own golden corpus (incl. regex_posix 8) | 137 | 0 | 0 |
 | imported onetrue-awk | 215 | 0 | 9 |
-| imported gawk | 191 | 0 | 113 |
+| imported gawk | 192 | 0 | 112 |
+| regex differential (551 patterns, 13 142 lines) | 13 142 | 0 | 108 split/untested |
 
-Both `KNOWN_FAILURES` lists are empty.
+All `KNOWN_FAILURES` lists are empty.
+
+### Regular expressions
+
+Regexes follow POSIX ERE with leftmost-longest matching for `match()`,
+`sub`/`gsub`, `split`, regex FS and regex RS. Bracket expressions,
+including `[= =]` and `[. .]`, work in the C locale. The
+`awk_tests/regex_differential.json` record holds the majority answer of
+mawk, onetrue-awk and gawk --posix, run with LC_ALL=C.
+
+```sh
+.venv/bin/python scripts/regex_fuzz.py            # re-run the references, rewrite the record, compare pyawk
+.venv/bin/python scripts/regex_fuzz.py --check    # compare pyawk with the stored record only
+.venv/bin/python scripts/regex_fuzz.py --verify-safety 1000  # check the fast-path rule exhaustively
+```
+
+Rules, overrides and the open decisions are in DESIGN.md ("Regular expressions").
 
 ### Benchmarks
 
