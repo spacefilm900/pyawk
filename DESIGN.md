@@ -31,6 +31,11 @@ A value is one of: `float` (number), `str` (string), or `StrNum(s, n)`
   `ARGV`, `ENVIRON`, `-v` and operand assignments when the text satisfies the
   POSIX numeric-string grammar (leading/trailing blanks allowed; no hex, no
   inf/nan).
+* `$0` keeps the type of a value assigned to it: after `$0 = "0"` it is a
+  plain string (true in a condition), although `$1` split from it is a
+  strnum. A `$0` rebuilt from its fields (field or `NF` assignment) is a
+  plain string too. All three references agree, except that mawk makes
+  `$0` a strnum after an `NF` assignment (gawk tests `nfldstr`, `zeroe0`).
 * Comparison: numeric if neither operand is a plain string, otherwise string
   comparison (numbers converted with `CONVFMT`).
 * Number → string: integral values with |n| < 2^64 print as integers

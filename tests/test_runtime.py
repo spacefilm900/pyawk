@@ -232,3 +232,15 @@ def test_undefined_escape_in_field_separator() -> None:
     assert awk('BEGIN { FS = "b\\.c" } { print NF }', "abxcd\n")[0] == "2\n"
     # A single-character FS is never a regex, so "\\." is just a literal dot.
     assert awk(prog, "a.b\n", assignments=[("FS", r"\.")])[0] == "2\n"
+
+
+def test_string_assigned_to_record_stays_a_string() -> None:
+    # $0 = "0" keeps the type of the value assigned: a string, so it is
+    # true; the fields split from it are still numeric strings (strnums).
+    # A $0 rebuilt from its fields is a string too.  (All three references;
+    # gawk tests nfldstr and zeroe0.)
+    prog = 'BEGIN { $0 = "0"; print !$0, !$1; $0 = 0; print !$0; x = "0"; $0 = x; print !$0 }'
+    assert awk(prog) == ("0 1\n1\n0\n", 0)
+    assert awk('BEGIN { $0 = "00E0"; print ($0 && 1); $1 = "0"; print !$0, !$1 }') == ("1\n0 0\n", 0)
+    # Input records and $0 = $1 (a strnum) stay numeric strings.
+    assert awk('{ print !$0; $0 = $1; print !$0 }', "0\n") == ("1\n1\n", 0)

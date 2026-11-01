@@ -807,6 +807,13 @@ class Interpreter:
         """
         if i == 0:
             self.set_record(self.str_of(v))
+            # $0 keeps the type of what was assigned: after $0 = "0" it is a
+            # plain string (so true), not a numeric string; its fields are
+            # still checked for numbers when split.  Numbers and strnums
+            # need nothing here: get_field rebuilds a strnum from the text.
+            # ``type(v) is str`` is an exact type test (StrNum is not str).
+            if type(v) is str:
+                self.record_value = v
             return
         if i < 0:
             raise AwkRuntimeError(f"trying to access out of range field {i}")
@@ -822,7 +829,9 @@ class Interpreter:
         assert self.fields is not None
         ofs = self.str_of(self.vars["OFS"])
         self.record = ofs.join(self.str_of(f) for f in self.fields)
-        self.record_value = None
+        # A rebuilt $0 is a plain string, never a strnum (onetrue-awk and
+        # gawk; mawk agrees except after an NF assignment).
+        self.record_value = self.record
 
     def get_nf(self) -> float:
         self._split_record()
