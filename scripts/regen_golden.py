@@ -47,8 +47,10 @@ def vote(cases: list[harness.Case]) -> int:
     """Print how the references compare on each case; return the problem count.
 
     A case is fine when at least two references agree and the ``.out``
-    file holds their answer.  Anything else (a three-way split, or a
-    ``.out`` that is not the majority answer) is printed and counted.
+    file holds their answer, or when the case is listed in DECISIONS and
+    the ``.out`` holds the chosen reference's answer.  Anything else (an
+    undecided three-way split, or a ``.out`` that is not the majority or
+    decided answer) is printed and counted.
     """
     problems = 0
     decisions = harness.read_decisions()
@@ -63,11 +65,9 @@ def vote(cases: list[harness.Case]) -> int:
         if len(groups) == 1 and expected == majority:
             continue  # all three agree with the .out file: nothing to say
         dissent = [", ".join(names) for out, names in groups.items() if out != majority]
-        if len(groups[majority]) < 2:
-            problems += 1
-            print(f"SPLIT {case.id}: no two references agree")
-        elif case.id in decisions:
-            # A decided case follows mawk's answer (see DECISIONS).  Only
+        if case.id in decisions:
+            # A decided case follows mawk's answer (see DECISIONS), even
+            # when all three references disagree, so this comes first.  Only
             # call it a success if the recorded .out really holds that
             # answer; a stale or missing .out is a problem like any other.
             if expected is None:
@@ -78,6 +78,9 @@ def vote(cases: list[harness.Case]) -> int:
                 print(f"DECIDED-WRONG {case.id}: .out is not the {DECISION_REFERENCE} answer")
             else:
                 print(f"DECIDED {case.id}: {decisions[case.id]}")
+        elif len(groups[majority]) < 2:
+            problems += 1
+            print(f"SPLIT {case.id}: no two references agree")
         elif expected != majority:
             problems += 1
             print(f"WRONG {case.id}: .out is not the majority answer ({', '.join(groups[majority])})")

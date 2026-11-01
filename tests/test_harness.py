@@ -51,3 +51,18 @@ def test_decided_case_must_match_chosen_reference(
         stdout=next(v for k, v in answers.items() if regen.REFERENCES[k] == cmd)))
     monkeypatch.setattr(regen.harness, "read_decisions", lambda: {"io/close_status": "follow mawk"})
     assert regen.vote([_fake_case(tmp_path, recorded)]) == problems
+
+
+@pytest.mark.parametrize("recorded, problems", [("mawk\n", 0), ("gawk\n", 1), (None, 1)])
+def test_decided_case_with_three_way_split_follows_the_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recorded: str | None, problems: int
+) -> None:
+    # When all three references disagree, a case listed in DECISIONS must
+    # still be judged against the chosen reference's answer, not rejected
+    # as SPLIT (CodeRabbit, PR #1).
+    regen = _load_regen()
+    answers = {"mawk": "mawk\n", "onetrue": "onetrue\n", "gawk": "gawk\n"}
+    monkeypatch.setattr(regen.harness, "run_case", lambda case, cmd: SimpleNamespace(
+        stdout=next(v for k, v in answers.items() if regen.REFERENCES[k] == cmd)))
+    monkeypatch.setattr(regen.harness, "read_decisions", lambda: {"io/close_status": "follow mawk"})
+    assert regen.vote([_fake_case(tmp_path, recorded)]) == problems
