@@ -3,9 +3,13 @@
 ## Pipeline
 
 ```
-source --lexer.py--> tokens --parser.py--> ast.py nodes --runtime.py--> output
-                                                 builtins.py, values.py, regex.py
+source --lexer.py--> tokens --parser.py--> ast.py nodes --compiler.py--> closures --runtime.py--> output
+                                                          builtins.py, values.py, regex.py
 ```
+
+The AST is not interpreted directly: `compiler.py` first turns every node
+into a small Python function (a *closure*, see "Runtime"), once, before the
+program runs; the runtime then only calls those functions.
 
 | Module | Responsibility |
 |---|---|
@@ -15,8 +19,9 @@ source --lexer.py--> tokens --parser.py--> ast.py nodes --runtime.py--> output
 | `ast.py` | slotted dataclasses for expressions, statements, rules |
 | `parser.py` | recursive-descent parser, one method per precedence level |
 | `regex.py` | POSIX ERE → Python `re` translation, cached compilation (extra module, keeps runtime small) |
-| `runtime.py` | `Interpreter`, record reader, field splitting, I/O manager |
-| `builtins.py` | builtin functions, `printf` formatting, `sub/gsub` engine |
+| `compiler.py` | `Compiler`: AST → closures (expressions, conditions, statements, function calls, lvalue references) |
+| `runtime.py` | `Interpreter` (main loop, records and fields, variables), record reader, I/O manager |
+| `builtins.py` | builtin functions (each compiles its own call), `printf` formatting, `sub/gsub` engine |
 | `cli.py` | argument parsing, `python -m pyawk` entry point |
 
 The package is named `pyawk`, so `pyawk.ast` never shadows the stdlib `ast`.
@@ -154,9 +159,33 @@ $                                   ( grouping )
 
 ## Runtime
 
-* Tree-walking interpreter with per-node-type dispatch dicts
-  (`self._eval[type(node)]`). Control flow uses private exceptions
-  (`_BreakEx`, `_ContinueEx`, `_NextEx`, `ExitEx`).
+* **Compiled to closures.** `Compiler.compile_program` walks the AST once
+  and returns a `CompiledProgram`: BEGIN blocks, `(pattern, range end,
+  action)` rules and END blocks, all as Python closures. A closure is an
+  inner function that keeps the values it was built with (its operands,
+  the constant, the variable name), so running `x + 1` is one call that
+  does exactly that addition, with no look-up of node types or operators.
+  The first pyawk walked the tree on every evaluation instead; that
+  tree-walker has been removed. There are three kinds of closure:
+  *expressions* (`Thunk`) return an AWK value; *conditions* (`CondFn`)
+  return a Python bool, for `if`, loops, patterns, `&&`, `||`, `!`;
+  *statements* (`StmtFn`) return None or a signal.
+* **Control flow as return values.** `break`, `continue`, `next` and
+  `return` make a statement return a signal object (`BREAK`, `CONTINUE`,
+  `NEXT`, `RETURN`; the return value travels in `Interpreter.ret_value`).
+  Blocks and loops pass on signals they do not handle. The parser
+  guarantees these signals never have to cross an expression. `exit` and
+  run-time errors are still exceptions (`ExitEx`, `AwkRuntimeError`)
+  because they can happen inside a function called from an expression.
+* **Specialisation.** The compiler picks a cheaper closure when it can
+  see the case at compile time: `$3` (a constant field number), `x + 1`
+  and `x % 7` (a constant operand), comparisons with a number constant,
+  `i++` and `x += e` as statements (no result needed), global versus
+  local variables, `sub`/`gsub` on `$0`, and *string-only* uses of a
+  field (array subscripts, `length`, `~`, concatenation, `index`...),
+  which read the field's text without the numeric-string check.
+  Builtins are compile-time factories (`BUILTINS[name](compiler, args)`)
+  that return the closure for one call site.
 * Assignment targets are resolved once into a reference (`resolve` /
   `get_ref` / `set_ref`) so `a[i++] += 1`, `sub(/x/, "y", $(n++))` evaluate
   their subscripts exactly once. Compound assignments evaluate the right-hand
@@ -195,16 +224,19 @@ $                                   ( grouping )
 
 ## User-defined functions
 
-**Call frames.** The interpreter's `frame` attribute is the set of local
-variables of the call now running: a dict from parameter name to `Cell`
-(`None` outside any function). A call builds a new dict, makes it current,
-runs the body and puts the caller's dict back (in a `finally`, so `exit`
-and errors restore it too). The chain of saved dicts is the call stack;
-Python's own call stack holds it, because calls nest as the interpreter
-recurses. Variable access (`get_var`, `set_var`, `get_array`) looks in the
-current frame first and falls back to the globals (`vars`, `arrays`). Only
-the current frame is visible: AWK has no nested scopes, so a function
-never sees its caller's locals.
+**Call frames.** The interpreter's `frame` attribute holds the local
+variables of the call now running: a Python list of `Cell`s, one per
+parameter (`None` outside any function). Parameter names are known when a
+function is compiled, so each gets a fixed position and a local is read as
+`frame[position]`, with no look-up by name; every other name is a global,
+in `vars` (scalars) or `arrays`. A call builds a new list, makes it
+current, runs the body and puts the caller's list back (in a `finally`,
+so `exit` and errors restore it too). The chain of saved lists is the call
+stack; Python's own call stack holds it, because calls nest as the
+compiled closures call each other. Only the current frame is visible: AWK
+has no nested scopes, so a function never sees its caller's locals.
+(`Interpreter.get_var`, `set_var`, `get_array` and `var_kind` now see
+globals only; compiled code reaches locals through its frame positions.)
 
 **Cells and types.** AWK variables are untyped until first used, and a
 parameter can become a scalar or an array depending on what the body does
@@ -243,20 +275,27 @@ array) are errors, as in all three references. `length(x)` is the
 exception: it checks the type with `var_kind` without deciding it, so an
 unused `x` stays untyped (onetrue-awk and mawk; gawk disagrees).
 
-**return / exit.** `return` raises `_ReturnEx(value)`, caught by the call;
+**return / exit.** `return` stores its value in `Interpreter.ret_value`
+and returns the `RETURN` signal, which the call turns back into the value;
 falling off the end returns the uninitialized value. `exit` inside a
 function is the normal `ExitEx` and unwinds every call (END still runs
 after an `exit` in BEGIN or a rule). Function lookup happens at call time,
 so calling an undefined function is a runtime error only when executed.
 
-**Recursion.** Each AWK call level costs about eight nested Python calls
-(call → block → statement → expression → ...). When the program defines
-functions, `Interpreter.run` raises Python's recursion limit to 400 000
-and runs the program in a helper thread with a 1 GiB stack (thread stacks
-are allocated lazily, so this costs memory only as it is used); this
-gives AWK recursion around 40 000 levels deep for simple functions (gawk
-and mawk manage 10 000; onetrue-awk crashes there). Runaway recursion ends
-with "function call nesting too deep" instead of a crash.
+**Recursion.** Each AWK call level costs about four nested Python calls
+(call closure → block → statement → expression; the tree-walker needed
+about eight). When the program defines functions, `Interpreter.run`
+raises Python's recursion limit to 400 000 (`RECURSION_LIMIT`) and runs
+the program in a helper thread with a 1 GiB stack (`THREAD_STACK_SIZE`;
+thread stacks are allocated lazily, so this costs memory only as it is
+used). Measured on 2026-11-01 with
+`function r(n) { if (n == 0) return 0; return 1 + r(n - 1) }`: 99 900
+levels work and 100 000 fail cleanly, so AWK recursion goes about
+**100 000 levels** deep for simple functions (before the compiler: about
+66 500), fewer for bodies with deeply nested statements. gawk and mawk
+manage 10 000; onetrue-awk crashes there. The limit is Python's recursion
+limit, not the stack: runaway recursion ends with "function call nesting
+too deep" instead of a crash.
 
 **Reference disagreements and decisions.** Checked with onetrue-awk
 20260426, `gawk --posix` 5.4.1 and mawk 1.3.4:
@@ -301,9 +340,105 @@ onetrue-awk differs for four or more backslashes before `&`, and gawk --posix
 halves runs not followed by `&` (gawk tests backgsub, posix2008sub). In `gsub` an empty match is not allowed directly after a
 previous match (`gsub(/x*/, "-", "abxd")` → `-a-b-d-`).
 
+## Performance
+
+**How to measure.** `scripts/bench.py` runs nine workloads (below) on a
+generated, seeded 200 000-line input with pyawk, mawk, `gawk --posix` and
+onetrue-awk, keeps the best of three wall-clock runs and checks every
+output against mawk's. `--save LABEL` stores a run in `.bench/` (ignored
+by git) and `--compare LABEL` adds a speedup column against a saved run.
+
+```sh
+.venv/bin/python scripts/bench.py --save baseline          # before a change
+.venv/bin/python scripts/bench.py --compare baseline       # after it
+.venv/bin/python scripts/bench.py --only fields,funcs --awks pyawk
+```
+
+| workload | program (abridged) | exercises |
+|---|---|---|
+| print1 | `{ print $1 }` | record reading, field split, output |
+| sum | `{ s += $3 }` | numeric fields |
+| fields | `for (i = 1; i <= NF; i++) t += length($i)`; `$2 = "X"` | field loop, field assignment, `$0` rebuild |
+| regex | `/[0-9]+5\.\|qu+x.*thud/ { c++ }`, `$2 ~ /.../`, `$5 !~ /a/` | regex matching |
+| wordcount | `for (i = 1; i <= NF; i++) cnt[$i]++` | associative arrays |
+| printf | `printf "%-10s\|%8.2f\|%5d\|%x\n", ...` | printf |
+| gsub | `gsub(/[aeiou]/, "<&>"); sub(/^[0-9]+/, "#")` | sub/gsub on `$0` |
+| funcs | `s += f($4)` per record, plus `fib(22)` | user function calls, recursion |
+| begin_loop | a 1 000 000-iteration BEGIN loop with `%`, `==`, concatenation | the evaluator with no input |
+
+**Before and after** (2026-11-01; seconds, best of 3, 200 000 lines;
+8-core box, Python 3.13.5; mawk 1.3.4, gawk 5.4.1 `--posix`, onetrue-awk).
+"Before" is commit 32d9e5e (the tree-walker), "after" is the current code.
+
+| workload | pyawk before | pyawk after | speedup | mawk | gawk | onetrue | after ÷ mawk | before ÷ mawk |
+|---|---|---|---|---|---|---|---|---|
+| print1 | 1.213 | 0.353 | 3.44× | 0.041 | 0.028 | 0.125 | 8.7× | 29× |
+| sum | 1.228 | 0.379 | 3.24× | 0.047 | 0.040 | 0.118 | 8.1× | 25× |
+| fields | 6.353 | 1.867 | 3.40× | 0.122 | 0.212 | 0.280 | 15.3× | 52× |
+| regex | 1.608 | 0.560 | 2.87× | 0.145 | 0.507 | 0.322 | 3.9× | 11× |
+| wordcount | 5.999 | 1.565 | 3.83× | 0.332 | 0.592 | 0.445 | 4.7× | 13× |
+| printf | 2.441 | 0.837 | 2.92× | 0.144 | 0.199 | 0.248 | 5.8× | 16× |
+| gsub | 2.921 | 0.812 | 3.60× | 0.148 | 0.585 | 0.353 | 5.5× | 19× |
+| funcs | 2.066 | 0.459 | 4.50× | 0.048 | 0.053 | 0.139 | 9.7× | 41× |
+| begin_loop | 3.179 | 0.795 | 4.00× | 0.174 | 0.095 | 0.407 | 4.6× | 18× |
+
+(The reference awks' times are from the "after" run; the "before" run
+measured them within about 8 % of these, except wordcount, where all
+three were 15–35 % slower that time. The "before ÷ mawk" column uses the
+"before" run's own mawk time.)
+
+**What made the difference**, in order of the commits:
+
+1. *Lazy numeric strings.* Fields were all classified as strnums (does
+   the text look like a number?) when the record was split; now each is
+   classified the first time it is read as a value, and many never are.
+2. *Closures instead of a tree-walker* (the big one; see "Runtime"): no
+   per-evaluation dispatch on node type, signals instead of exceptions for
+   `break`/`next`/`return`, local variables by list position instead of
+   by dict look-up. This also halved the Python frames per AWK call, so
+   recursion goes deeper.
+3. *Specialised closures* for common shapes: `x op= e`, `$i`, `i++` as a
+   statement, `/` and `%` by a nonzero constant, comparisons with
+   constants, assignment statements that never build a result value, and
+   string-only uses of a field.
+4. *printf*: each format string is parsed once and cached; when every
+   conversion behaves like C's, the whole format goes through a single
+   Python `%` operation.
+5. *sub/gsub*: `re.subn` does the whole substitution in C when the
+   pattern cannot match the empty string; `$0` as the target is read and
+   written directly.
+6. *Records*: with the default FS, `str.split()` splits the record (it
+   agrees with AWK's rule when the text has no unusual whitespace, which
+   is checked); a one-character RS is read directly; `$0` is rebuilt from
+   a list, converting only fields that are not already strings.
+
+Numbers now use ASCII digits only (`"٣"` is no longer the number 3), as
+in all three reference awks; Python's `float()` had accepted any Unicode
+digit.
+
+**Where the time goes now** (cProfile on the workloads):
+
+* the evaluator's own overhead: one Python call per AST node per
+  evaluation, most visible in tight loops (`for (i = 1; i <= NF; i++)`
+  re-reads `NF` and compares through generic closures every iteration);
+* turning field text into strnums (`make_strnum`) and reading fields
+  (`field_var`);
+* user function calls: argument binders, a new frame list and a
+  `try`/`finally` per call;
+* field assignment and the `$0` rebuild that follows;
+* record reading and splitting;
+* the C cost of the regex engine itself (`re.search`, `re.subn`), which
+  pyawk cannot reduce.
+
+**Ideas not yet done:** specialise `i <= NF`-style loop conditions and
+whole counting `for` loops; read records in batches when RS is `"\n"`;
+cheaper frames for functions whose parameters are all scalars; compile a
+printf whose format is a constant string directly at compile time; a fast
+path for `sub`/`gsub` with a constant replacement containing no `&`.
+
 ## Test status
 
-pytest: 706 passed, 123 skipped. Golden summaries: own corpus 99/99,
+pytest: 744 passed, 123 skipped. Golden summaries: own corpus 99/99,
 onetrue-awk 215 pass / 9 skip, gawk 190 pass / 114 skip, no failures and
 empty `KNOWN_FAILURES` lists (2026-11-01). The last 18 gawk failures were
 fixed except close_status, now a reviewed skip (see `close()` above).
@@ -397,13 +532,12 @@ gives `""`. Tests: `tests/test_runtime.py`, golden `builtins/substr_clamp`
   the current input is treated as an independent stream.
 * `srand()` seed is time-based in seconds; `rand()` uses Python's Mersenne
   Twister, so sequences differ from other awks.
-* AWK recursion depth is limited (about 40 000 levels for a simple
+* AWK recursion depth is limited (about 100 000 levels for a simple
   function, fewer for bodies with deeply nested statements); beyond that,
-  a clean error. Function calls are fairly slow (a new dict and Cells per
-  call; `return` is a Python exception).
+  a clean error.
 * A parenthesised list `(a, b)` not followed by `in` is a parse error only
   as a whole pattern or an assigned value; in other places (`if ((a, b))`,
   `x = 1 + (a, b)`) it is a run-time error when reached, whereas the
   reference awks reject the program at parse time.
-* Performance: ~5 µs per simple record (≈30× slower than mawk). Fine for the
-  test corpus; a closure-compilation pass is the planned fix.
+* Performance: still roughly 5–15× slower than mawk and gawk on
+  record-processing workloads (see "Performance").

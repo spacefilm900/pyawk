@@ -97,12 +97,26 @@ As of 2026-11-01 (`.venv/bin/python -m pytest -q`, `scripts/run_golden.py`):
 
 | suite | pass | fail | skip |
 |---|---|---|---|
-| pytest (all) | 706 | 0 | 123 |
+| pytest (all) | 744 | 0 | 123 |
 | own golden corpus | 99 | 0 | 0 |
 | imported onetrue-awk | 215 | 0 | 9 |
 | imported gawk | 190 | 0 | 114 |
 
 Both `KNOWN_FAILURES` lists are empty.
+
+### Benchmarks
+
+```sh
+.venv/bin/python scripts/bench.py                     # all workloads, all awks found
+.venv/bin/python scripts/bench.py --save baseline     # store a run in .bench/
+.venv/bin/python scripts/bench.py --compare baseline  # add a speedup column
+.venv/bin/python scripts/bench.py --only funcs --awks pyawk,mawk
+```
+
+pyawk compiles the program to Python closures before running it; it is
+now about 3–4.5× faster than the original tree-walking interpreter, and
+roughly 4–15× slower than mawk. Tables and details are in DESIGN.md
+("Performance").
 
 See [DESIGN.md](DESIGN.md) for architecture, semantics decisions and the list
 of places where mawk (the reference used for `.out`) differs from POSIX.
