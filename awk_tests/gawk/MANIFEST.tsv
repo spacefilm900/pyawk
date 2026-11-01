@@ -229,7 +229,7 @@ regexpbrack2	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk repr
 regexpbrack3	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok
 regexprange	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok
 regexpuparrow	skip	gawk extension: RT	local gawk reproduces .ok; error from: onetrue
-regrange	skip	no majority among references	local gawk reproduces .ok
+regrange	run		expected: gawk .ok (agree: gawk --posix); regex decision: collating symbols in ranges ([a-[.e.]], [[.c.]-[.z.]]) follow POSIX as gawk --posix does; mawk ignores [. .] and onetrue-awk only accepts it alone
 reindops	run		expected: gawk .ok (agree: onetrue,gawk); local gawk reproduces .ok; error from: mawk
 reparse	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok
 resplit	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok

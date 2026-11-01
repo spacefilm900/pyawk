@@ -163,6 +163,17 @@ DECIDED: dict[str, str] = {
     ),
 }
 
+# Cases where the vote is split by mawk and onetrue-awk bugs in POSIX
+# bracket expressions, which pyawk resolves as gawk --posix does (the same
+# decision as regex_corpus.OVERRIDES; see DESIGN.md "Regular expressions").
+# They run with gawk's .ok, but only while gawk --posix reproduces it.
+REGEX_POSIX: dict[str, str] = {
+    "regrange": (
+        "regex decision: collating symbols in ranges ([a-[.e.]], [[.c.]-[.z.]]) follow POSIX "
+        "as gawk --posix does; mawk ignores [. .] and onetrue-awk only accepts it alone"
+    ),
+}
+
 # Lines of gawk diagnostics inside a .ok file ("gawk: file:3: fatal: ...",
 # "gawk: warning: ...") and the "EXIT CODE: 2" line the Makefile adds.
 DIAG = re.compile(r"^(gawk: |EXIT CODE: )")
@@ -444,6 +455,11 @@ def main() -> int:
                 raise SystemExit(f"{name}: mawk no longer matches gawk's .ok; review DECIDED")
             status, reason, expected = "run", "", exact_sep.stdout
             note = f"expected: gawk .ok (agree: mawk); {DECIDED[name]}"
+        if name in REGEX_POSIX:
+            if refs["gawk"].stdout != exact_sep.stdout or failed(refs["gawk"]):
+                raise SystemExit(f"{name}: gawk --posix no longer matches gawk's .ok; review REGEX_POSIX")
+            status, reason, expected = "run", "", exact_sep.stdout
+            note = f"expected: gawk .ok (agree: gawk --posix); {REGEX_POSIX[name]}"
         if spec.note:
             note = spec.note + "; " + note
         (DEST / f"{name}.out").write_text(expected or "", encoding="utf-8", errors="surrogateescape")
