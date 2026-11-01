@@ -74,7 +74,8 @@ from typing import TYPE_CHECKING, Any, Callable
 from . import ast
 from .builtins import BUILTINS, format_printf
 from .errors import AwkRuntimeError
-from .regex import compile_ere
+from .regex import LongestPattern, compile_span
+from .regex import compile_ere as _compile_test
 from .values import UNINIT, StrNum, Value, make_strnum, num_to_str, to_num, to_str
 
 if TYPE_CHECKING:  # pragma: no cover - only for type checkers (avoids a cycle)
@@ -741,33 +742,38 @@ class Compiler:
 
         return in_
 
-    def regex(self, node: ast.Expr) -> Callable[[], "re.Pattern[str]"]:
+    def regex(self, node: ast.Expr, span: bool = False) -> Callable[[], "re.Pattern[str] | LongestPattern"]:
         """A closure giving the compiled regex for a match operand.
 
         A /literal/ is compiled now, once.  Any other expression's string
         value is used as a regex ("dynamic regex"); the last one compiled
         at this place in the program is remembered, since it is usually
         the same string every time.
+
+        ``span=True`` is for callers that need the exact extent of a match
+        (match(), sub, gsub): they get regex.compile_span's POSIX
+        leftmost-longest matcher; ``~`` only needs yes/no (regex.compile_ere).
         """
+        compile_fn = compile_span if span else _compile_test
         if type(node) is ast.Regex:
             source = node.source  # type: ignore[attr-defined]
             try:
-                pattern = compile_ere(source)
+                pattern = compile_fn(source)
             except AwkRuntimeError:
                 # A bad regex is reported when it is used, not before.
-                return lambda: compile_ere(source)
+                return lambda: compile_fn(source)
             return _const(pattern)
         e = self.string(node)
         last_source: str | None = None
-        last_pattern: re.Pattern[str] | None = None
+        last_pattern: re.Pattern[str] | LongestPattern | None = None
 
-        def dynamic() -> re.Pattern[str]:
+        def dynamic() -> re.Pattern[str] | LongestPattern:
             # ``nonlocal``: assign to the enclosing function's variables
             # (without it, assigning would make new local ones).
             nonlocal last_source, last_pattern
             s = e()
             if s != last_source:
-                last_pattern = compile_ere(s)
+                last_pattern = compile_fn(s)
                 last_source = s
             return last_pattern  # type: ignore[return-value]
 

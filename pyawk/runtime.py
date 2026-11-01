@@ -46,7 +46,7 @@ from . import ast
 from .compiler import NEXT, NEXTFILE, CompiledProgram, Compiler
 from .errors import AwkRuntimeError
 from .lexer import process_escapes
-from .regex import compile_ere
+from .regex import LongestPattern, compile_span
 from .values import UNINIT, StrNum, Value, make_strnum, num_to_str, to_num, to_str
 
 # Input bytes that are not valid UTF-8 are carried through unchanged
@@ -289,7 +289,7 @@ class RecordReader:
             pass
         if self.start >= len(self.buf):
             return None
-        pat = compile_ere(rs)
+        pat = compile_span(rs)
         pos = self.start
         while True:
             m = pat.search(self.buf, pos)
@@ -862,17 +862,17 @@ class Interpreter:
         # A single character is taken literally (re.escape), e.g. FS="|".
         source = re.escape(fs) if len(fs) == 1 else fs
         if paragraph:
-            return self._split_compiled(s, compile_ere("\n|" + source if len(fs) == 1 else "\n|(" + source + ")"))
-        return self._split_compiled(s, compile_ere(source))
+            return self._split_compiled(s, compile_span("\n|" + source if len(fs) == 1 else "\n|(" + source + ")"))
+        return self._split_compiled(s, compile_span(source))
 
     def split_regex(self, s: str, ere: str) -> list[str]:
         if s == "":
             return []
-        return self._split_compiled(s, compile_ere(ere))
+        return self._split_compiled(s, compile_span(ere))
 
     # ``@staticmethod``: a plain function kept in the class; it has no ``self``.
     @staticmethod
-    def _split_compiled(s: str, pat: re.Pattern[str]) -> list[str]:
+    def _split_compiled(s: str, pat: re.Pattern[str] | LongestPattern) -> list[str]:
         """Split s at each non-empty match of pat."""
         pieces: list[str] = []
         pos = 0

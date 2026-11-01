@@ -3,6 +3,7 @@
 
 usage: scripts/regex_fuzz.py [--check] [--show N] [--category CAT] [--jobs J]
        scripts/regex_fuzz.py --explain ERE [--inputs a,b,...]
+       scripts/regex_fuzz.py --verify-safety [N]
 
 Without ``--check``: run every pattern of the corpus (awk_tests/regex_corpus.py:
 curated categories plus seeded random EREs) through the three reference
@@ -167,6 +168,57 @@ def explain(entry: rc.Entry) -> None:
             print(f"    {name:<8} {lines[i]}")
 
 
+def verify_safety(count: int) -> int:
+    """Check regex._safe: wherever it trusts Python's match, it must be the longest.
+
+    Exhaustive over runs of up to three single-character items (each atom
+    with each repeat operator), then ``count`` seeded random items runs of
+    length four and ``count`` random corpus-style EREs (with groups and
+    alternation); every pattern judged safe is compared with the automaton
+    on every string over {a, b, c} up to length 6.  Returns the number of
+    unsafe verdicts found (0 expected).
+    """
+    import itertools
+    import random
+    import re
+
+    from pyawk.regex import LongestPattern, _emit, _safe, parse
+
+    strings = ["".join(p) for n in range(7) for p in itertools.product("abc", repeat=n)]
+    items = [a + q for a in ("a", "b", "[ab]", ".") for q in ("", "?", "*", "+", "{1,2}", "{0,2}", "{2,}")]
+    rnd = random.Random(7)
+    patterns = ["".join(c) for n in (1, 2, 3) for c in itertools.product(items, repeat=n)]
+    patterns += ["".join(rnd.choice(items) for _ in range(4)) for _ in range(count)]
+    patterns += ["^" + p for p in rnd.sample(patterns, count // 4)]
+    patterns += [p + "$" for p in rnd.sample(patterns, count // 4)]
+    patterns += [e.pattern for e in rc.random_patterns(count, seed=11)]
+    checked = bad = 0
+    for pat in patterns:
+        try:
+            tree = parse(pat)
+        except Exception:
+            continue
+        if not _safe(tree):
+            continue
+        checked += 1
+        lp = LongestPattern(tree, re.compile(_emit(tree), re.DOTALL))
+        for text in strings:
+            for pos in range(len(text) + 1):
+                m = lp.py.search(text, pos)
+                if m is None:
+                    break
+                if lp.longest(text, m.start()) != m.end():
+                    bad += 1
+                    print(f"UNSAFE /{pat}/ on {text!r} from {pos}: python {m.span()}, longest end "
+                          f"{lp.longest(text, m.start())}")
+                    break
+            else:
+                continue
+            break
+    print(f"verify-safety: {checked} patterns judged safe checked, {bad} wrong")
+    return bad
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true", help="compare pyawk with the recorded file only")
@@ -175,7 +227,11 @@ def main() -> int:
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--explain", metavar="ERE", help="show every reference's answer and pyawk's for one pattern")
     ap.add_argument("--inputs", help="with --explain: comma-separated inputs (default: the a/b/c set)")
+    ap.add_argument("--verify-safety", type=int, nargs="?", const=1000, metavar="N",
+                    help="check the safety analysis exhaustively (N random patterns per family)")
     args = ap.parse_args()
+    if args.verify_safety is not None:
+        return 1 if verify_safety(args.verify_safety) else 0
     if args.explain is not None:
         inputs = tuple(args.inputs.split(",")) if args.inputs is not None else rc.ABC_INPUTS
         explain(rc.Entry("explain", args.explain, inputs))

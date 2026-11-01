@@ -33,6 +33,7 @@ from .values import UNINIT, StrNum, Value, make_strnum, special_float_str, to_nu
 # below write the class name in quotes: "Compiler".
 if TYPE_CHECKING:  # pragma: no cover
     from .compiler import Compiler
+    from .regex import LongestPattern
 
 # ----------------------------------------------------------------- printf
 # One printf conversion: % flags width .precision letter, e.g. "%-5.2f".
@@ -413,13 +414,15 @@ def _template(repl: str) -> str:
     return t
 
 
-def _never_matches_empty(pattern: re.Pattern[str]) -> bool:
+def _never_matches_empty(pattern: "re.Pattern[str] | LongestPattern") -> bool:
     """True if ``pattern`` can only match one or more characters.
 
     Python's regex parser computes the shortest possible match length;
     the parser is an internal module, so if it is missing or changes we
     answer False and substitute() takes its general path.
     """
+    if type(pattern) is not re.Pattern:
+        return False  # a LongestPattern: always the general path
     answer = _NONEMPTY_CACHE.get(pattern)
     if answer is None:
         try:
@@ -434,7 +437,7 @@ def _never_matches_empty(pattern: re.Pattern[str]) -> bool:
     return answer
 
 
-def substitute(pattern: re.Pattern[str], repl: str, s: str, global_: bool) -> tuple[str, int]:
+def substitute(pattern: "re.Pattern[str] | LongestPattern", repl: str, s: str, global_: bool) -> tuple[str, int]:
     """sub()/gsub() core with AWK empty-match rules; returns (result, count).
 
     Fast path: when the pattern cannot match the empty string, AWK's rules
@@ -619,7 +622,7 @@ def _split(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 def _sub_common(c: "Compiler", args: list[ast.Expr], global_: bool) -> Thunk:
     if bad := _arity("gsub" if global_ else "sub", args, 2, 3):
         return bad
-    pattern, repl, sval = c.regex(args[0]), c.string(args[1]), c.sval
+    pattern, repl, sval = c.regex(args[0], span=True), c.string(args[1]), c.sval
     # The default target is $0.
     target: ast.Expr = args[2] if len(args) == 3 else ast.Field(ast.Num(0.0))
     if type(target) is ast.Field and _int_const_zero(target.index):
@@ -682,7 +685,7 @@ def _match(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     """match(s, re): sets RSTART (1-based, 0 if none) and RLENGTH (-1 if none)."""
     if bad := _arity("match", args, 2, 2):
         return bad
-    s, pattern = c.string(args[0]), c.regex(args[1])
+    s, pattern = c.string(args[0]), c.regex(args[1], span=True)
     set_start, set_length = c.scalar_setter("RSTART"), c.scalar_setter("RLENGTH")
 
     def match() -> Value:

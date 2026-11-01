@@ -624,6 +624,7 @@ class _DState:
 
 
 _DFA_LIMIT = 10000  # cached DFA states per pattern before starting afresh
+_UNSEEN = object()  # marker: "no transition cached for this character"
 
 
 class LongestPattern:
@@ -700,8 +701,8 @@ class LongestPattern:
             if d.accept:
                 last = i
             ch = s[i]
-            nxt = d.next.get(ch, d)  # ``d`` itself stands for "not computed yet"
-            if nxt is d:
+            nxt = d.next.get(ch, _UNSEEN)
+            if nxt is _UNSEEN:  # this transition has not been computed yet
                 nxt = step(d, ch)
             if nxt is None:
                 return last
