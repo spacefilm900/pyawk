@@ -87,6 +87,8 @@ def process_escapes(s: str) -> str:
 
     Turns the two characters backslash + ``n`` into a real newline, and so on.
     Octal escapes take at most three digits: ``\\0101`` is ``\\010`` + ``1``.
+    Any other backslash pair loses its backslash (``\\q`` is ``q``); a lone
+    backslash at the very end is kept as it is.
     """
     if "\\" not in s:
         return s
@@ -112,8 +114,11 @@ def process_escapes(s: str) -> str:
             out.append(chr(int(s[i + 1 : j], 8)))
             i = j
         else:
-            # Unknown escape: keep the backslash (matches mawk/gawk behaviour).
-            out.append("\\")
+            # Undefined escape such as "\q", "\&" or "\.": POSIX leaves it
+            # undefined; we drop the backslash and keep the character, as
+            # onetrue-awk and gawk do (mawk keeps both).  This also applies
+            # to -v/operand assignments and to strings later used as dynamic
+            # regexes, so "a\.b" is the regex a.b.  See DESIGN.md.
             out.append(d)
             i += 2
     return "".join(out)

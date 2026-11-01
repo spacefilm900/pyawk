@@ -124,6 +124,27 @@ def read_known_failures(directory: Path) -> set[str]:
     return names - {""}
 
 
+def read_overrides() -> dict[str, str]:
+    """Hand-corrected golden cases: ``{"CATEGORY/NAME": reason}``.
+
+    ``golden/OVERRIDES`` lists cases whose ``.out`` was written by hand
+    because the reference awk (mawk) is the odd one out among onetrue-awk,
+    gawk and mawk.  Each line is ``CATEGORY/NAME  reason``; ``#`` starts a
+    comment.  regen_golden.py never overwrites these ``.out`` files.
+    """
+    p = GOLDEN / "OVERRIDES"
+    if not p.exists():
+        return {}
+    out: dict[str, str] = {}
+    for line in p.read_text().splitlines():
+        line = line.partition("#")[0].strip()
+        if line:
+            # ``split(None, 1)`` splits once, on the first run of whitespace.
+            case_id, reason = (line.split(None, 1) + [""])[:2]
+            out[case_id] = reason.strip()
+    return out
+
+
 def discover(categories: tuple[str, ...] = ALL_CATEGORIES) -> list[Case]:
     """All cases, one per ``.awk`` file, in a stable (sorted) order."""
     cases: list[Case] = []

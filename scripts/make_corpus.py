@@ -69,6 +69,7 @@ add("fields", "dollar0_assign", '{ $0 = "x y z"; print NF, $2 }\nEND { $0 = "p q
 add("fields", "nr_fnr_filename", 'NR == 1 { print FILENAME }\n{ print NR, FNR, $0 }\n', "first\nsecond\nthird\n")
 add("fields", "strnum_compare", '{ print ($1 == 10), ($1 == "10"), ($1 < 9), ($1 > 0) }\n', NUMS)
 add("fields", "field_increment", '{ $2++; $3 += 10; print }\n', EMP)
+add("fields", "past_nf", '{ print NF, ($5 == 0), ($5 == ""), length($5), ($NF == 0) }\n{ $6 = "x"; print ($4 == 0), ($4 == ""), NF }\n', "a b c\n\n0\n")
 add("fields", "fs_change_next_record", '{ FS = ":"; print $1 }\n', "a:b c\nd:e f\n")
 
 # ---------------- patterns
@@ -113,6 +114,9 @@ add("builtins", "math_fns", 'BEGIN {\n\tprint int(3.9), int(-3.9), int("12abc"),
 add("builtins", "match_fn", '{ if (match($0, /o+/)) print RSTART, RLENGTH, substr($0, RSTART, RLENGTH); else print RSTART, RLENGTH }\n', "foobar\nbazooo\nnothing here\nxyz\n")
 add("builtins", "getline_file", 'NR == 1 { while ((getline l < FILENAME) > 0) n++; print "lines:", n; close(FILENAME) }\nNR == 2 { getline first < FILENAME; print "first again:", first }\n', "alpha\nbeta\ngamma\n")
 add("builtins", "string_to_number", 'BEGIN { print "3x" + 1, " 12 " * 2, "abc" + 0, "1e2" + 0, ".5" + 0, "+7" - 1, "-" + 0 }\n')
+# mawk keeps the backslash of an undefined escape; this case's .out is
+# hand-corrected to the onetrue-awk/gawk answer (listed in golden/OVERRIDES).
+add("builtins", "undefined_escapes", '{ s = $0; sub(/o/, "[\\&]", s); t = $0; gsub(/o/, "\\\\&", t); u = $0; sub(/o/, v, u)\n  print s, t, u, "\\q", length("\\q"), ($0 ~ "f\\.o"), ($0 ~ "f\\\\.o") }\n', "foo\nf.o\n", "-v 'v=<\\&>'")
 
 # ---------------- one-liners (from "The AWK Programming Language")
 add("one_liners", "count_lines", "END { print NR }\n", EMP)

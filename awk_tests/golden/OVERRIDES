@@ -1,0 +1,6 @@
+# Golden cases whose .out is hand-corrected because mawk (the reference awk
+# used by scripts/regen_golden.py) is the outlier: onetrue-awk and
+# gawk --posix agree with each other and with the .out file.
+# regen_golden.py never rewrites these; see DESIGN.md.
+# Format: CATEGORY/NAME  reason
+builtins/undefined_escapes  mawk keeps the backslash of undefined escapes like "\&", "\q", "\." (onetrue-awk and gawk drop it)

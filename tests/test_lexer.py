@@ -66,6 +66,15 @@ def test_errors() -> None:
 def test_process_escapes() -> None:
     assert process_escapes(r"a\nb") == "a\nb"
     assert process_escapes(r"\t") == "\t"
-    assert process_escapes(r"\q") == "\\q"
+    # Undefined escapes drop the backslash (onetrue-awk and gawk; mawk keeps
+    # it).  See DESIGN.md, "Undefined escapes in strings".
+    assert process_escapes(r"\q") == "q"
+    assert process_escapes(r"\&") == "&"
+    assert process_escapes(r"\.") == "."
+    assert process_escapes(r"\8\9") == "89"  # 8 and 9 are not octal digits
+    assert process_escapes(r"\/") == "/"
+    # "\\" is a defined escape (one backslash), so "\\&" keeps a backslash
+    # in front of the & -- which sub/gsub then read as a literal &.
+    assert process_escapes(r"\\&") == "\\&"
     assert process_escapes("\\") == "\\"
     assert process_escapes(r"\0101") == "\x081"  # at most three octal digits

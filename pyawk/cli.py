@@ -151,7 +151,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         # runtime applies all of them before BEGIN: Interpreter.__init__ calls
         # Interpreter.command_line_assign (runtime.py), which runs
         # lexer.process_escapes on the value, so ``-F '\t'`` means a tab,
-        # exactly as for -v.
+        # exactly as for -v, and an undefined escape loses its backslash
+        # (``-F 'b\.c'`` is the regex b.c, as in onetrue-awk and gawk).
         return run(source, operands, assignments)
     except UsageError as exc:
         sys.stderr.write(f"pyawk: {exc}\n{USAGE}")

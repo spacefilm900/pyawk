@@ -48,6 +48,8 @@ scripts/regen_golden.py --awk gawk  # use another reference awk
 Golden cases live in `awk_tests/golden/<category>/NAME.{awk,in,out[,args]}`
 and run as `awk [args] -f NAME.awk NAME.in` from the category directory.
 `scripts/make_corpus.py` is the source of the `.awk/.in/.args` files.
+Cases listed in `awk_tests/golden/OVERRIDES` have hand-corrected `.out`
+files (mawk is the outlier there); `regen_golden.py` leaves them alone.
 
 ### Imported onetrue-awk suite
 

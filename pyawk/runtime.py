@@ -638,7 +638,14 @@ class Interpreter:
         return pieces
 
     def get_field(self, i: int) -> Value:
-        """$i.  $0 needs no splitting; fields past NF are uninitialised."""
+        """$i.  $0 needs no splitting.
+
+        A field past NF is the empty *string*, like an existing empty field,
+        not the uninitialised value: so ``$5 == 0`` compares "" with "0" as
+        strings and is false.  This is what onetrue-awk, mawk and gawk all
+        do (DESIGN.md explains why we follow them rather than a literal
+        reading of POSIX).
+        """
         if i == 0:
             if self.record_value is None:
                 self.record_value = make_strnum(self.record)
@@ -648,7 +655,7 @@ class Interpreter:
         fields = self._split_record()
         if i <= self.nf:
             return fields[i - 1]  # Python lists count from 0, AWK fields from 1
-        return UNINIT
+        return ""
 
     def set_field(self, i: int, v: Value) -> None:
         """Assign $i.
@@ -665,7 +672,7 @@ class Interpreter:
             raise AwkRuntimeError(f"trying to access out of range field {i}")
         fields = self._split_record()
         while len(fields) < i:
-            fields.append(UNINIT)
+            fields.append("")  # gap fields are empty strings (see get_field)
         fields[i - 1] = v
         self.nf = len(fields)
         self._rebuild_record()
@@ -689,7 +696,7 @@ class Interpreter:
         fields = self._split_record()
         del fields[n:]  # remove everything from index n to the end
         while len(fields) < n:
-            fields.append(UNINIT)
+            fields.append("")  # new fields are empty strings (see get_field)
         self.nf = n
         self._rebuild_record()
 

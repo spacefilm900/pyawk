@@ -123,3 +123,59 @@ def test_empty_separator_splits_characters() -> None:
 
 def test_infinity_formatting() -> None:
     assert awk('BEGIN { print -log(0), log(0); printf "%f %5.1e\\n", -log(0), log(0) }')[0] == "+inf -inf\n+inf  -inf\n"
+
+
+def test_fields_past_nf_are_empty_strings() -> None:
+    """A field beyond NF is the empty *string*, not the uninitialised value.
+
+    So ``$5 == 0`` is a string comparison ("" vs "0") and false, exactly as
+    for an existing empty field; an unset variable, by contrast, equals both
+    0 and "".  onetrue-awk, mawk and gawk all agree (DESIGN.md).
+    """
+    prog = '{ x = $9; print ($5 == 0), ($5 == ""), length($5), (x == 0), ($(NF+1) < 1), ($3 + 0), (u == 0) }'
+    assert awk(prog, "a b\n")[0] == "0 1 0 0 1 0 1\n"
+    # On an empty line even $1 is past NF.
+    assert awk("{ print ($1 == 0), ($0 == 0), NF }", "\n")[0] == "0 0 0\n"
+    # Fields created to fill a gap ($5 = ... or NF = ...) are empty strings too.
+    prog = '{ $5 = "x"; print ($3 == 0), length($3); NF = 8; print ($7 == 0); $0 = "p q"; NF = 4; print ($4 == 0) }'
+    assert awk(prog, "a b\n")[0] == "0 0\n0\n0\n"
+
+
+def test_undefined_escape_in_sub_replacement() -> None:
+    """ "\\&" in a string literal is just "&", i.e. "the matched text"."""
+    prog = r'''BEGIN {
+        s = "foo"; sub(/o/, "\&", s); print s      # & = matched text
+        s = "foo"; sub(/o/, "\\&", s); print s     # \\& = a literal &
+        s = "foo"; sub(/o/, "\\\\&", s); print s   # \\\\& = backslash + matched
+        s = "foo"; gsub(/o/, "<\&>", s); print s
+        print "\q", length("\q"), length("\&")
+    }'''
+    assert awk(prog)[0] == "foo\nf&o\nf\\oo\nf<o><o>\nq 1 1\n"
+
+
+def test_undefined_escape_in_dynamic_regex() -> None:
+    """A dynamic regex is a string first, so "a\\.b" is "a.b" (any char)."""
+    prog = r'''BEGIN {
+        print ("axb" ~ "a\.b"), ("axb" ~ "a\\.b"), ("axb" ~ /a\.b/)
+        print ("&" ~ /\&/), ("q" ~ /\q/), ("a" ~ "a\$"), ("a$" ~ "a\$")
+    }'''
+    assert awk(prog)[0] == "1 0 0\n1 1 1 0\n"
+
+
+def test_undefined_escape_in_command_line_assignments(tmp_path: Path) -> None:
+    """-v and operand assignments get the same escape processing."""
+    f = tmp_path / "data"
+    f.write_text("x\n")
+    prog = '{ s = "foo"; sub(/o/, w, s); print v, w, length(w), s, ("axb" ~ d) }'
+    out, _ = awk(prog, "", r"w=\&", r"d=a\.b", str(f), assignments=[("v", r"\q")])
+    assert out == "q & 1 foo 1\n"
+
+
+def test_undefined_escape_in_field_separator() -> None:
+    """-F, -v FS=, FS= operands and FS="..." all drop the backslash of "\\.",
+    so a multi-character FS "b\\.c" is the regex b.c (onetrue-awk, gawk)."""
+    prog = "{ print NF }"
+    assert awk(prog, "abxcd\n", assignments=[("FS", r"b\.c")])[0] == "2\n"
+    assert awk('BEGIN { FS = "b\\.c" } { print NF }', "abxcd\n")[0] == "2\n"
+    # A single-character FS is never a regex, so "\\." is just a literal dot.
+    assert awk(prog, "a.b\n", assignments=[("FS", r"\.")])[0] == "2\n"
