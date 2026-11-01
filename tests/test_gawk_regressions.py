@@ -65,3 +65,14 @@ def test_increment_binds_to_innermost_field() -> None:
     prog = 'BEGIN { $0 = "AAAA"; x = $$$B++ ""*""+$$B++N; print x }'
     assert awk(prog) == "12\n"
     assert awk("BEGIN { a = 3 } { print $$a++++; print }", "3 4 5 6 7 8 9\n") == "7\n3 4 6 6 8 8 9\n"
+
+
+# ----------------------------------------------------------------- regex
+@pytest.mark.parametrize(
+    "line, expected",
+    [("+2", "0 0 0"), ("2", "1 0 0"), ("*a", "0 1 1"), ("a", "0 1 1")],
+)
+def test_repeat_operator_after_caret_repeats_the_anchor(line: str, expected: str) -> None:
+    # reindops: ``/^+[2-9]/`` is ``(^)+[2-9]``, not a literal "+".
+    prog = "{ print ($0 ~ /^+[2-9]/), ($0 ~ /^*a/), ($0 ~ /^?a/) }"
+    assert awk(prog, line + "\n") == expected + "\n"

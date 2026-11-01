@@ -98,6 +98,14 @@ def translate(ere: str) -> str:
         elif c == "[":
             text, i = _bracket(ere, i)
             out.append(text)
+        elif c == "^" and i + 1 < n and ere[i + 1] in "+*?":
+            # A repeat operator right after the ``^`` anchor repeats the
+            # anchor itself (onetrue-awk and gawk; mawk rejects it, and
+            # Python says "nothing to repeat").  ``^+`` is just ``^``;
+            # ``^*`` and ``^?`` make the anchor optional, so both vanish.
+            if ere[i + 1] == "+":
+                out.append("^")
+            i += 2
         else:
             out.append(c)
             i += 1
