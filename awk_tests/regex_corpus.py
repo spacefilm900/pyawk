@@ -172,24 +172,42 @@ def random_patterns(count: int = 300, seed: int = 1) -> list[Entry]:
     return out
 
 
-# Patterns whose recorded answer is gawk's instead of the majority's.
+# Patterns whose recorded answer comes from one named reference instead of
+# the majority vote, each with the reason.  A vote is only meaningful when
+# the references that agree do so for the same reason; in these cases the
+# "majority" is two different bugs that happen to give the same answer.
 #
-# mawk does not implement equivalence classes ``[=x=]`` or collating
-# symbols ``[.x.]`` at all (it reads them as ordinary bracket members), and
-# onetrue-awk handles them only as the sole member of a bracket.  Where the
-# two agree, it is usually two different bugs giving the same wrong answer,
-# so a plain vote would make pyawk copy a bug.  For these patterns the
-# record holds gawk --posix's answer, which follows POSIX in the C locale:
-# ``[=a=]`` and ``[.a.]`` each mean just "a", and a multi-character name
-# such as ``[.ab.]`` or ``[.space.]`` is an invalid collating element
-# (an error).  DESIGN.md lists this as a decision taken against the vote.
-POSIX_OVERRIDES = {
-    p: "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs"
-    for p in (
-        "[[=a=]]", "[[=a=]b]", "[[.a.]]", "[[.-.]]", "[[.].]]", "[a[.-.]z]", "[[=-=]]", "[[.^.]]",
-        "[[=ab=]]", "[[.ab.]]", "[[.space.]]", "[[=a]", "[[.a]", "[[=]=]]", "[[.[.]]",
-        "[[:alpha:][.-.]]", "[[.a.]-c]",
-    )
+# * Equivalence classes ``[=x=]`` and collating symbols ``[.x.]``: mawk
+#   does not implement them at all (it reads them as ordinary bracket
+#   members) and onetrue-awk only as the sole member of a bracket.  gawk
+#   --posix follows POSIX in the C locale: ``[=a=]`` and ``[.a.]`` each
+#   mean just "a"; a multi-character name such as ``[.ab.]`` or
+#   ``[.space.]`` is an invalid collating element (an error).
+# * Two random patterns that only fail because mawk rejects ``$(`` at the
+#   start of a branch and onetrue-awk rejects ``^`` after other items; each
+#   construct alone is accepted by the other two awks.
+# * ``a(|b)c``: mawk accepts some empty alternatives but misparses them
+#   (it reports ``x(a|)b`` matching "abc"), so its agreement with gawk
+#   here is accidental; onetrue-awk's error is the consistent rule that
+#   the majority applies to ``a|``, ``|a``, ``(|b)`` and ``(a|)b``.
+# DESIGN.md lists these as decisions taken against the plain vote.
+_COLLATING = "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs"
+_TWO_BUGS = "error only from two different bugs: mawk rejects $( at a branch start, onetrue a non-leading ^"
+# The reference named "none" means: record nothing, test nothing.
+OVERRIDES: dict[str, tuple[str, str]] = {
+    **{
+        p: ("gawk", _COLLATING)
+        for p in (
+            "[[=a=]]", "[[=a=]b]", "[[.a.]]", "[[.-.]]", "[[.].]]", "[a[.-.]z]", "[[=-=]]", "[[.^.]]",
+            "[[=ab=]]", "[[.ab.]]", "[[.space.]]", "[[=a]", "[[.a]", "[[=]=]]", "[[.[.]]",
+            "[[:alpha:][.-.]]", "[[.a.]-c]",
+        )
+    },
+    "(c^|a+(a)b*|c+c)?|$(c+b(aa|[bc]bb?)|[ab][bc].|(bb?|ab?a?)+b)": ("gawk", _TWO_BUGS),
+    # gawk's split() is wrong here too (an empty match at the start drops
+    # the first character: split("ab", A, /x*^/) gives "b"), so not tested.
+    "a+$([^a]+a*$|bcc)|(ac(a|a{2}ac|.b?b)|c{2,}|a*)^": ("none", _TWO_BUGS + "; gawk's split is wrong too"),
+    "a(|b)c": ("onetrue", "empty alternative: mawk accepts it here only by misparsing; error as for a| and (|b)"),
 }
 
 

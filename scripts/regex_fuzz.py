@@ -2,6 +2,7 @@
 """Differential regex testing: pyawk against mawk, onetrue-awk and gawk.
 
 usage: scripts/regex_fuzz.py [--check] [--show N] [--category CAT] [--jobs J]
+       scripts/regex_fuzz.py --explain ERE [--inputs a,b,...]
 
 Without ``--check``: run every pattern of the corpus (awk_tests/regex_corpus.py:
 curated categories plus seeded random EREs) through the three reference
@@ -18,8 +19,11 @@ that rejects the pattern (non-zero exit status) counts as answering
 ``ERROR`` on every line.  Where no two references agree, the line is
 recorded as a *split* (``null``, with each reference's answer kept under
 ``splits``) and not tested; DESIGN.md lists such cases as open decisions.
-Patterns in ``regex_corpus.POSIX_OVERRIDES`` record gawk's answer instead
-of the vote (the reason is stored under ``override``).
+Patterns in ``regex_corpus.OVERRIDES`` record one named reference's answer
+instead of the vote (the reason is stored under ``override``).  The
+references run with LC_ALL=C: the C locale is the one POSIX bracket
+semantics are specified for here (under C.UTF-8, gawk's ``[=a=]`` also
+matches "A").
 
 ``--show N`` prints the first N mismatching lines with the three
 references' answers next to pyawk's.
@@ -29,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from collections import Counter
@@ -57,6 +62,7 @@ def run_reference(cmd: list[str], entry: rc.Entry) -> list[str]:
     try:
         proc = subprocess.run(
             [*cmd, rc.probe_program(entry.pattern)],
+            env={**os.environ, "LC_ALL": "C"},
             input=rc.stdin_text(entry).encode("utf-8", "surrogateescape"),
             capture_output=True,
             timeout=10,
@@ -86,10 +92,10 @@ def regenerate(entries: list[rc.Entry], jobs: int) -> dict:
     for entry, ans in zip(entries, all_answers):
         expected: list[str | None] = []
         splits: dict[str, dict[str, str]] = {}
-        override = rc.POSIX_OVERRIDES.get(entry.pattern)
+        override = rc.OVERRIDES.get(entry.pattern)
         for i, inp in enumerate(entry.inputs):
             if override:
-                expected.append(ans["gawk"][i])
+                expected.append(None if override[0] == "none" else ans[override[0]][i])
                 continue
             votes = Counter(ans[name][i] for name in REFERENCES)
             value, n = votes.most_common(1)[0]
@@ -103,7 +109,7 @@ def regenerate(entries: list[rc.Entry], jobs: int) -> dict:
         if splits:
             rec["splits"] = splits
         if override:
-            rec["override"] = override
+            rec["override"] = f"{override[0]}: {override[1]}"
         # Which reference was outvoted where (handy when reading the file).
         outvoted = sorted({name for name in REFERENCES for i, e in enumerate(expected)
                            if e is not None and ans[name][i] != e})

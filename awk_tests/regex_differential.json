@@ -8951,7 +8951,7 @@
     "1 1 1 1 <a> 2::",
     "0 -1 0 0 b 1:b",
     "0 -1 0 0 z 1:z",
-    "1 1 1 1 <A> 2::",
+    "0 -1 0 0 A 1:A",
     "0 -1 0 0 - 1:-",
     "0 -1 0 0 ] 1:]",
     "0 -1 0 0 [ 1:[",
@@ -8976,10 +8976,9 @@
     "0 -1 0 0 { 1:{",
     "0 -1 0 0 | 1:|"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
-    "mawk",
-    "onetrue"
+    "mawk"
    ]
   },
   {
@@ -9020,7 +9019,7 @@
     "1 1 1 1 <a> 2::",
     "1 1 1 1 <b> 2::",
     "0 -1 0 0 z 1:z",
-    "1 1 1 1 <A> 2::",
+    "0 -1 0 0 A 1:A",
     "0 -1 0 0 - 1:-",
     "0 -1 0 0 ] 1:]",
     "0 -1 0 0 [ 1:[",
@@ -9045,7 +9044,7 @@
     "0 -1 0 0 { 1:{",
     "0 -1 0 0 | 1:|"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk",
     "onetrue"
@@ -9114,7 +9113,7 @@
     "0 -1 0 0 { 1:{",
     "0 -1 0 0 | 1:|"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk"
    ]
@@ -9182,7 +9181,7 @@
     "0 -1 0 0 { 1:{",
     "0 -1 0 0 | 1:|"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk"
    ]
@@ -9250,7 +9249,7 @@
     "0 -1 0 0 { 1:{",
     "0 -1 0 0 | 1:|"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk"
    ]
@@ -9318,7 +9317,7 @@
     "0 -1 0 0 { 1:{",
     "0 -1 0 0 | 1:|"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk",
     "onetrue"
@@ -9387,7 +9386,7 @@
     "0 -1 0 0 { 1:{",
     "0 -1 0 0 | 1:|"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk"
    ]
@@ -9455,7 +9454,7 @@
     "0 -1 0 0 { 1:{",
     "0 -1 0 0 | 1:|"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk"
    ]
@@ -11367,7 +11366,7 @@
     "ERROR",
     "ERROR"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk",
     "onetrue"
@@ -11436,7 +11435,7 @@
     "ERROR",
     "ERROR"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk",
     "onetrue"
@@ -11505,7 +11504,7 @@
     "ERROR",
     "ERROR"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk",
     "onetrue"
@@ -11574,7 +11573,7 @@
     "ERROR",
     "ERROR"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk"
    ]
@@ -11642,7 +11641,7 @@
     "ERROR",
     "ERROR"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk"
    ]
@@ -11710,7 +11709,7 @@
     "0 -1 0 0 { 1:{",
     "0 -1 0 0 | 1:|"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk"
    ]
@@ -11778,7 +11777,7 @@
     "0 -1 0 0 { 1:{",
     "0 -1 0 0 | 1:|"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk"
    ]
@@ -11846,7 +11845,7 @@
     "0 -1 0 0 { 1:{",
     "0 -1 0 0 | 1:|"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk",
     "onetrue"
@@ -11915,7 +11914,7 @@
     "0 -1 0 0 { 1:{",
     "0 -1 0 0 | 1:|"
    ],
-   "override": "collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
+   "override": "gawk: collating symbol / equivalence class: POSIX (gawk) rather than mawk/onetrue bugs",
    "outvoted": [
     "mawk",
     "onetrue"
@@ -16979,50 +16978,35 @@
     "abc"
    ],
    "expected": [
-    "0 -1 0 0  0",
-    "0 -1 0 0 a 1:a",
-    "0 -1 0 0 b 1:b",
-    "0 -1 0 0 c 1:c",
-    "0 -1 0 0 ab 1:ab",
-    "0 -1 0 0 ba 1:ba",
-    "0 -1 0 0 aa 1:aa",
-    "0 -1 0 0 bb 1:bb",
-    null,
-    "0 -1 0 0 aab 1:aab",
-    "0 -1 0 0 abb 1:abb",
-    "0 -1 0 0 abab 1:abab",
-    "0 -1 0 0 baab 1:baab",
-    "0 -1 0 0 aaab 1:aaab",
-    "0 -1 0 0 abba 1:abba",
-    "0 -1 0 0 bbaa 1:bbaa",
-    "5 2 1 1 cabb<ac> 2:cabb:",
-    null,
-    "0 -1 0 0 aaaa 1:aaaa",
-    "0 -1 0 0 babab 1:babab",
-    null,
-    "0 -1 0 0 xyz 1:xyz",
-    "1 2 1 1 <ac> 2::",
-    null
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR",
+    "ERROR"
    ],
-   "splits": {
-    "abc": {
-     "mawk": "2 2 1 1 a<bc> 2:a:",
-     "onetrue": "ERROR",
-     "gawk": "1 3 1 1 <abc> 2::"
-    },
-    "abcabc": {
-     "mawk": "2 2 1 2 a<bc>a<bc> 3:a:a:",
-     "onetrue": "ERROR",
-     "gawk": "1 3 1 2 <abc><abc> 3:::"
-    },
-    "acbca": {
-     "mawk": "1 2 1 2 <ac><bc>a 3:::a",
-     "onetrue": "ERROR",
-     "gawk": "1 2 1 1 <ac>bca 2::bca"
-    }
-   },
+   "override": "onetrue: empty alternative: mawk accepts it here only by misparsing; error as for a| and (|b)",
    "outvoted": [
-    "onetrue"
+    "gawk",
+    "mawk"
    ]
   },
   {
@@ -26727,32 +26711,30 @@
     "xyz"
    ],
    "expected": [
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR"
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
    ],
-   "outvoted": [
-    "gawk"
-   ]
+   "override": "none: error only from two different bugs: mawk rejects $( at a branch start, onetrue a non-leading ^; gawk's split is wrong too"
   },
   {
    "category": "random",
@@ -28748,31 +28730,33 @@
     "xyz"
    ],
    "expected": [
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR",
-    "ERROR"
+    "1 0 1 1 <> 0",
+    "1 0 1 2 <>a<> 1:a",
+    "1 0 1 2 <>b<> 1:b",
+    "1 0 1 2 <>c<> 1:c",
+    "1 0 1 3 <>a<>b<> 1:ab",
+    "1 0 1 3 <>b<>a<> 1:ba",
+    "1 2 1 1 <aa> 2::",
+    "1 0 1 3 <>b<>b<> 1:bb",
+    "1 0 1 4 <>a<>b<>c<> 1:abc",
+    "1 3 1 1 <aab> 2::",
+    "1 0 1 4 <>a<>b<>b<> 1:abb",
+    "1 0 1 5 <>a<>b<>a<>b<> 1:abab",
+    "1 0 1 2 <>b<aab> 2:b:",
+    "1 4 1 1 <aaab> 2::",
+    "1 0 1 5 <>a<>b<>b<>a<> 1:abba",
+    "1 0 1 3 <>b<>b<aa> 2:bb:",
+    "1 0 1 7 <>c<>a<>b<>b<>a<>c<> 1:cabbac",
+    "1 0 1 7 <>a<>b<>c<>a<>b<>c<> 1:abcabc",
+    "1 4 1 1 <aaaa> 2::",
+    "1 0 1 6 <>b<>a<>b<>a<>b<> 1:babab",
+    "1 0 1 6 <>a<>c<>b<>c<>a<> 1:acbca",
+    "1 0 1 4 <>x<>y<>z<> 1:xyz"
    ],
+   "override": "gawk: error only from two different bugs: mawk rejects $( at a branch start, onetrue a non-leading ^",
    "outvoted": [
-    "gawk"
+    "mawk",
+    "onetrue"
    ]
   },
   {
