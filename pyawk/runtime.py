@@ -287,7 +287,10 @@ class IOManager:
         entry = self.outputs.get(name)
         if entry is not None:
             return entry[0]
-        if name in ("/dev/stdout", "-"):
+        # "-" is *not* standard output here: mawk and onetrue-awk write to a
+        # file called "-" (only gawk treats it as stdout).  For getline,
+        # "-" does mean standard input (get_input_file).
+        if name == "/dev/stdout":
             return self.stdout
         if name == "/dev/stderr":
             return sys.stderr
