@@ -52,6 +52,7 @@ Python note: ``try: ... finally: ...`` runs the ``finally`` part however the
 from __future__ import annotations
 
 from . import ast
+from .builtins import ARITY
 from .errors import AwkSyntaxError
 from .lexer import Token, tokenize
 
@@ -868,7 +869,19 @@ class Parser:
             if name == "length":
                 return ast.Call("length", [])
             raise self.error(f"expected '(' after {name}")
-        return ast.Call(name, self.parse_call_args())
+        args = self.parse_call_args()
+        # A wrong number of arguments is a syntax error, even in code that
+        # never runs (mawk and gawk; onetrue-awk for most builtins).
+        lo, hi = ARITY[name]
+        if not lo <= len(args) <= hi:
+            if lo == hi:
+                want = str(lo)
+            elif name == "sprintf":  # no upper limit
+                want = f"at least {lo}"
+            else:
+                want = f"{lo} to {hi}"
+            raise AwkSyntaxError(f"function {name} called with {len(args)} args (takes {want})", t.line)
+        return ast.Call(name, args)
 
     def parse_call_args(self) -> list[ast.Expr]:
         """``( [expr, expr, ...] )`` after a builtin or user function name.

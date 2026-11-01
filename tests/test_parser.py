@@ -347,3 +347,67 @@ def test_parenthesised_list_not_before_in_is_a_syntax_error(src: str) -> None:
 )
 def test_parenthesised_list_before_in_or_after_print_is_fine(src: str) -> None:
     parse(src)
+
+
+# Wrong numbers of arguments to a builtin.  mawk and gawk reject these while
+# parsing, even in code that never runs; onetrue-awk does too for most of
+# them (it only warns for e.g. ``length(1, 2)`` or ``rand(1)``).
+@pytest.mark.parametrize(
+    "call",
+    [
+        'substr("a")',
+        'substr("a", 1, 2, 3)',
+        "index(1)",
+        'split("a")',
+        'split("a", b, " ", 4)',
+        "sub(/a/)",
+        'gsub(/a/, "b", x, 4)',
+        "match(1)",
+        'match("a", /a/, m)',  # gawk's three-argument match is an extension
+        "length(1, 2)",
+        "sin()",
+        "cos(1, 2)",
+        "exp()",
+        "log()",
+        "sqrt(1, 2)",
+        "int()",
+        "atan2(1)",
+        "rand(1)",
+        "srand(1, 2)",
+        "tolower()",
+        "toupper(1, 2)",
+        "system()",
+        "close()",
+        'close("a", "b")',  # gawk's two-argument close is an extension
+        "fflush(1, 2)",
+        "sprintf()",
+    ],
+)
+def test_builtin_argument_count_is_checked_when_parsing(call: str) -> None:
+    with pytest.raises(AwkSyntaxError, match="called with"):
+        parse(f"BEGIN {{ if (0) x = {call} }}")
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "length",
+        "length()",
+        "length(1)",
+        'substr("a", 1)',
+        'substr("a", 1, 2)',
+        'split("a", b)',
+        'split("a", b, " ")',
+        'sub(/a/, "b")',
+        'gsub(/a/, "b", x)',
+        "rand()",
+        "srand()",
+        "srand(1)",
+        "fflush()",
+        'fflush("a")',
+        'sprintf("a")',
+        'sprintf("%s %s", 1, 2)',
+    ],
+)
+def test_builtin_argument_counts_that_are_allowed(call: str) -> None:
+    parse(f"BEGIN {{ x = {call} }}")

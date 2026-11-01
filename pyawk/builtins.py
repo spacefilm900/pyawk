@@ -511,24 +511,8 @@ Thunk = Callable[[], Value]
 BuiltinFn = Callable[["Compiler", list[ast.Expr]], Thunk]
 
 
-def _arity(name: str, args: list[ast.Expr], lo: int, hi: int) -> Thunk | None:
-    """None if the call has an allowed number of arguments, else a closure
-    that reports the mistake when the call runs (not before: AWK only
-    complains about calls that actually happen)."""
-    if lo <= len(args) <= hi:
-        return None
-    msg = f"function {name} called with {len(args)} args"
-
-    def fail() -> Value:
-        raise AwkRuntimeError(msg)
-
-    return fail
-
-
 def _length(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     """length, length(s), or length(array) (number of elements: an extension)."""
-    if bad := _arity("length", args, 0, 1):  # ``:=`` assigns inside the test
-        return bad
     it = c.it
     if not args:
         return lambda: float(len(it.record))
@@ -553,8 +537,6 @@ def _length(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 
 
 def _substr(c: "Compiler", args: list[ast.Expr]) -> Thunk:
-    if bad := _arity("substr", args, 2, 3):
-        return bad
     s, m = c.string(args[0]), c.expr(args[1])
     if len(args) == 2:
         return lambda: substr(s(), to_num(m()))
@@ -569,8 +551,6 @@ def _substr(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 
 
 def _index(c: "Compiler", args: list[ast.Expr]) -> Thunk:
-    if bad := _arity("index", args, 2, 2):
-        return bad
     s, t = c.string(args[0]), c.string(args[1])
 
     def index_() -> Value:
@@ -586,8 +566,6 @@ def _split(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     The separator follows FS rules (" " = runs of blanks, one character =
     that character, longer = a regex); a /regex/ literal is used directly.
     """
-    if bad := _arity("split", args, 2, 3):
-        return bad
     it, sval, s = c.it, c.sval, c.expr(args[0])
     target = args[1]
     if not isinstance(target, ast.Var):
@@ -623,8 +601,6 @@ def _split(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 
 
 def _sub_common(c: "Compiler", args: list[ast.Expr], global_: bool) -> Thunk:
-    if bad := _arity("gsub" if global_ else "sub", args, 2, 3):
-        return bad
     pattern, repl, sval = c.regex(args[0], span=True), c.string(args[1]), c.sval
     # The default target is $0.
     target: ast.Expr = args[2] if len(args) == 3 else ast.Field(ast.Num(0.0))
@@ -686,8 +662,6 @@ def _gsub(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 
 def _match(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     """match(s, re): sets RSTART (1-based, 0 if none) and RLENGTH (-1 if none)."""
-    if bad := _arity("match", args, 2, 2):
-        return bad
     s, pattern = c.string(args[0]), c.regex(args[1], span=True)
     set_start, set_length = c.scalar_setter("RSTART"), c.scalar_setter("RLENGTH")
 
@@ -709,8 +683,6 @@ def _match(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 
 
 def _sprintf(c: "Compiler", args: list[ast.Expr]) -> Thunk:
-    if not args:
-        return _fail("sprintf: no format")
     parts, sval, vars_ = [c.expr(a) for a in args], c.sval, c.vars
 
     def sprintf() -> Value:
@@ -719,13 +691,6 @@ def _sprintf(c: "Compiler", args: list[ast.Expr]) -> Thunk:
         return format_printf(sval(vals[0]), vals[1:], to_str(vars_["CONVFMT"]))
 
     return sprintf
-
-
-def _fail(msg: str) -> Thunk:
-    def fail() -> Value:
-        raise AwkRuntimeError(msg)
-
-    return fail
 
 
 def _math1(fn: Callable[[float], float], name: str) -> BuiltinFn:
@@ -737,8 +702,6 @@ def _math1(fn: Callable[[float], float], name: str) -> BuiltinFn:
     """
 
     def compile_math(c: "Compiler", args: list[ast.Expr]) -> Thunk:
-        if bad := _arity(name, args, 1, 1):
-            return bad
         e = c.expr(args[0])
 
         def impl() -> Value:
@@ -758,8 +721,6 @@ def _math1(fn: Callable[[float], float], name: str) -> BuiltinFn:
 
 
 def _int(c: "Compiler", args: list[ast.Expr]) -> Thunk:
-    if bad := _arity("int", args, 1, 1):
-        return bad
     e = c.expr(args[0])
 
     def int_() -> Value:
@@ -772,8 +733,6 @@ def _int(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 
 
 def _atan2(c: "Compiler", args: list[ast.Expr]) -> Thunk:
-    if bad := _arity("atan2", args, 2, 2):
-        return bad
     y, x = c.expr(args[0]), c.expr(args[1])
 
     def atan2() -> Value:
@@ -784,15 +743,11 @@ def _atan2(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 
 
 def _rand(c: "Compiler", args: list[ast.Expr]) -> Thunk:
-    if bad := _arity("rand", args, 0, 0):
-        return bad
     it = c.it
     return lambda: it.rng.random()
 
 
 def _srand(c: "Compiler", args: list[ast.Expr]) -> Thunk:
-    if bad := _arity("srand", args, 0, 1):
-        return bad
     it = c.it
     e = c.expr(args[0]) if args else None
 
@@ -806,22 +761,16 @@ def _srand(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 
 
 def _tolower(c: "Compiler", args: list[ast.Expr]) -> Thunk:
-    if bad := _arity("tolower", args, 1, 1):
-        return bad
     e = c.string(args[0])
     return lambda: e().lower()
 
 
 def _toupper(c: "Compiler", args: list[ast.Expr]) -> Thunk:
-    if bad := _arity("toupper", args, 1, 1):
-        return bad
     e = c.string(args[0])
     return lambda: e().upper()
 
 
 def _system(c: "Compiler", args: list[ast.Expr]) -> Thunk:
-    if bad := _arity("system", args, 1, 1):
-        return bad
     e, sval, it = c.expr(args[0]), c.sval, c.it
 
     def system() -> Value:
@@ -835,15 +784,11 @@ def _system(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 
 
 def _close(c: "Compiler", args: list[ast.Expr]) -> Thunk:
-    if bad := _arity("close", args, 1, 1):
-        return bad
     e, sval, it = c.expr(args[0]), c.sval, c.it
     return lambda: float(it.io.close(sval(e())))
 
 
 def _fflush(c: "Compiler", args: list[ast.Expr]) -> Thunk:
-    if bad := _arity("fflush", args, 0, 1):
-        return bad
     it, sval = c.it, c.sval
 
     # fflush() and fflush(""): flush everything (POSIX 2024; gawk and mawk).
@@ -869,6 +814,35 @@ def _fflush(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 
 # Dispatch table: the compiler looks up a builtin by name here, instead of
 # using a long if/elif chain over the names.
+# How many arguments each builtin takes: (fewest, most).  The parser checks
+# every call against this table, so a wrong count is a syntax error even in
+# code that never runs, as in mawk and gawk (onetrue-awk agrees for most
+# builtins).  The compilers below can therefore rely on the count.
+ARITY: dict[str, tuple[int, int]] = {
+    "length": (0, 1),
+    "substr": (2, 3),
+    "index": (2, 2),
+    "split": (2, 3),
+    "sub": (2, 3),
+    "gsub": (2, 3),
+    "match": (2, 2),
+    "sprintf": (1, 1_000_000),  # a format, then any number of values
+    "sin": (1, 1),
+    "cos": (1, 1),
+    "exp": (1, 1),
+    "log": (1, 1),
+    "sqrt": (1, 1),
+    "int": (1, 1),
+    "atan2": (2, 2),
+    "rand": (0, 0),
+    "srand": (0, 1),
+    "tolower": (1, 1),
+    "toupper": (1, 1),
+    "system": (1, 1),
+    "close": (1, 1),
+    "fflush": (0, 1),
+}
+
 BUILTINS: dict[str, BuiltinFn] = {
     "length": _length,
     "substr": _substr,
@@ -894,4 +868,4 @@ BUILTINS: dict[str, BuiltinFn] = {
     "fflush": _fflush,
 }
 
-__all__ = ["BUILTINS", "format_printf", "substr", "index", "substitute", "StrNum"]
+__all__ = ["ARITY", "BUILTINS", "format_printf", "substr", "index", "substitute", "StrNum"]
