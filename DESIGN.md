@@ -457,7 +457,25 @@ The reference awks use automata and answer at once. pyawk now does too:
   cached, the cache is cleared and rebuilt as the scan goes on. Each input
   character builds at most one new state, so the cost per character is
   bounded by the NFA size. `(a|b)*a(a|b){15}` (2^16 DFA states) runs
-  `gsub` and `~` over 100 000 random a/b characters in 0.6 s.
+  `gsub` and `~` over 100 000 random a/b characters in 0.6 s. Clearing
+  also empties the old states' transition tables (`_DFA._forget`): a scan
+  in progress still holds its current state and the idle state, and the
+  old tables would otherwise link them to every state built later, so
+  nothing would be freed during one long scan (20 000 live states with a
+  limit of 64 before the fix; CodeRabbit, PR #1). The initial states are
+  kept, with empty tables.
+* Size limits (a regex may come from the input, and the NFA writes out
+  every copy an interval asks for). Repetition counts above
+  `RE_DUP_MAX` = 32767 are bad regexes: POSIX lets an implementation pick
+  any limit of at least 255; onetrue-awk stops at 255, gawk at 32767, and
+  mawk has no limit, so the majority accepts `a{0,1000}` (gawk, mawk) and
+  rejects `a{0,100000}` (onetrue, gawk). And a pattern whose NFA would
+  need more than `NFA_LIMIT` = 1 000 000 states is refused at parse time
+  ("too big"); the count is computed from the syntax tree, not built.
+  Only nested intervals reach it: `((a{0,200}){0,200}){0,200}` (8 million
+  states) took 1 GB and 3 s, and with 1000s it exhausted memory. That is a
+  deliberate difference: gawk and mawk accept such patterns, given the
+  memory (CodeRabbit, PR #1).
 
 After the change every one of those cases (`~`, `match`, `sub`, `gsub`,
 `split` and FS) takes at most a few milliseconds on 30 characters and stays

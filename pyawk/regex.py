@@ -228,7 +228,12 @@ class _Parser:
         return AwkRuntimeError(f"bad regular expression /{self.s}/: {why}")
 
     def parse(self) -> object:
-        return self.alt()
+        tree = self.alt()
+        # Refuse a pattern whose automaton would be enormous now, before
+        # anything is built (see NFA_LIMIT).
+        if _nfa_size(tree) > NFA_LIMIT:
+            raise self.error(f"too big (needs more than {NFA_LIMIT} automaton states)")
+        return tree
 
     def alt(self) -> object:
         branches = []
@@ -343,6 +348,8 @@ class _Parser:
             raise self.error("unterminated interval {")
         if hi is not None and hi < lo:
             raise self.error("interval {n,m} with m < n")
+        if max(lo, hi or 0) > RE_DUP_MAX:
+            raise self.error(f"repetition count above {RE_DUP_MAX}")
         return lo, hi, k + 1
 
     def escape(self) -> str:
@@ -426,6 +433,45 @@ class _Parser:
             return self.escape()
         self.i = i + 1
         return c
+
+
+# Limits that keep a regex (which may come from the input) from using
+# unbounded memory.  The automaton writes out every copy an interval asks
+# for, so ``a{1000}`` is 1000 states and nested intervals multiply.
+#
+# RE_DUP_MAX: the largest count allowed in ``{n,m}``.  POSIX lets each
+# implementation choose any value of at least 255; onetrue-awk uses 255,
+# gawk 32767, mawk has no limit.  pyawk follows gawk (the majority accepts
+# ``a{0,1000}`` and rejects ``a{0,100000}``).
+RE_DUP_MAX = 32767
+# NFA_LIMIT: the most automaton states a pattern may need.  A million
+# states take roughly 100 MB.  Only nested intervals get near it, e.g.
+# ``((a{0,200}){0,200}){0,200}`` (8 million); gawk and mawk accept those,
+# given the memory, but here they are refused as "too big".
+NFA_LIMIT = 1_000_000
+
+
+def _nfa_size(node: object) -> int:
+    """How many states _NFA.build makes for ``node`` (counted, not built).
+
+    Mirrors build() case by case.  The counts are exact Python integers,
+    so even absurd nestings are measured without building anything.
+    """
+    t = type(node)
+    if t is Chars:
+        return 1
+    if t is Cat:
+        return sum(_nfa_size(x) for x in node.items)  # type: ignore[attr-defined]
+    if t is Alt:
+        branches = node.branches  # type: ignore[attr-defined]
+        return sum(_nfa_size(b) for b in branches) + len(branches) - 1  # one SPLIT per extra branch
+    if t is Repeat:
+        x, lo, hi = _nfa_size(node.node), node.min, node.max  # type: ignore[attr-defined]
+        optional = 1 + x if hi is None else (hi - lo) * (1 + x)  # loop, or one SPLIT + copy each
+        return optional + lo * x
+    if node is BOL or node is EOL:
+        return 1
+    return 0  # EMPTY
 
 
 def _repeat(node: object, lo: int, hi: int | None) -> object:

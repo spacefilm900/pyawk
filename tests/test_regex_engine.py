@@ -208,3 +208,48 @@ def test_self_loop_transitions_are_cached() -> None:
     assert isinstance(lp, LongestPattern)
     assert lp.search("x" + "ab" * 50 + "c").span() == (1, 102)
     assert len(lp.cache) < 10
+
+
+# ---------------------------------------------------------------- size limits
+# A regex may come from the input (``$0 ~ $1``), and the automaton writes
+# out every copy an interval asks for, so an unchecked pattern could use any
+# amount of memory (CodeRabbit, PR #1): ``((a{0,200}){0,200}){0,200}`` took
+# 1 GB and 3 s; with 1000s it would exhaust memory.  Two limits apply.
+#
+# Repetition counts: POSIX allows any limit (RE_DUP_MAX) of at least 255.
+# onetrue-awk stops at 255, gawk at 32767, mawk has none.  The majority
+# accepts a{0,1000} (gawk, mawk) and rejects a{0,100000} (onetrue, gawk),
+# so pyawk takes gawk's 32767.
+
+
+@pytest.mark.parametrize("ere", ["a{32767}", "a{0,32767}", "a{1000,}", "(ab){2,300}"])
+def test_repetition_counts_up_to_32767_are_accepted(ere: str) -> None:
+    parse(ere)
+
+
+@pytest.mark.parametrize("ere", ["a{32768}", "a{0,32768}", "a{100000,}", "a{1,99999999999999999999}"])
+def test_repetition_counts_above_32767_are_bad_regexes(ere: str) -> None:
+    with pytest.raises(AwkRuntimeError, match="bad regular expression.*repetition count"):
+        parse(ere)
+
+
+# Nested intervals multiply: no single count is large, but the automaton
+# would be.  A pattern needing more than a million automaton states is
+# refused before anything is built (a deliberate difference: gawk and mawk
+# accept it, given enough memory and time).
+
+
+@pytest.mark.parametrize("ere", ["((a{0,200}){0,200}){0,200}", "((a{0,1000}){0,1000}){0,1000}", "(a{32767}){32767}"])
+def test_patterns_needing_huge_automata_are_bad_regexes(ere: str) -> None:
+    with pytest.raises(AwkRuntimeError, match="bad regular expression.*too big"):
+        compile_ere(ere)
+
+
+def test_a_huge_dynamic_regex_is_a_runtime_error_not_a_hang() -> None:
+    with pytest.raises(AwkRuntimeError, match="too big"):
+        awk('{ print ($0 ~ $1) }', "((a{0,1000}){0,1000}){0,1000}\n")
+
+
+@pytest.mark.parametrize("ere", ["(a|b{0,1000}){0,400}", "((a|aa){0,300}){0,300}", "(a|b){0,32767}"])
+def test_large_but_reasonable_patterns_still_work(ere: str) -> None:
+    assert compile_ere(ere).search("xaay") is not None
