@@ -194,3 +194,35 @@ def test_regex_rs_on_long_input_is_linear() -> None:
             [sys.executable, "-m", "pyawk", prog], input=data, capture_output=True, text=True, timeout=30, cwd=ROOT
         )
         assert proc.stdout.strip() == want, proc.stderr
+
+
+# ------------------------------------------- skip-ahead and quick probing
+@pytest.mark.parametrize(
+    "ere, text, found, spans",
+    [
+        ("(x|y)+z|$", "abc", True, [(3, 3)]),  # only the empty match at the end
+        ("(x|y)+z|$", "xxz-", True, [(0, 3), (4, 4)]),
+        ("^(a|ab)+c|b", "abac", True, [(0, 4)]),  # ``^``: position 0 has its own first set
+        ("^(a|ab)+c|b", "xabac", True, [(2, 3)]),
+        ("(a|ab)+c", "xyz", None, []),
+        ("(ab|a)*", "xab", True, [(0, 0), (1, 3), (3, 3)]),  # empty matches: nothing to skip
+    ],
+)
+def test_skip_ahead_edges(ere: str, text: str, found: bool | None, spans: list[tuple[int, int]]) -> None:
+    from pyawk.regex import LongestPattern
+
+    lp = LongestPattern(parse(ere), None)
+    assert lp.found(text) is found
+    assert [m.span() for m in lp.finditer(text)] == spans
+    marks_only = LongestPattern(parse(ere), None)
+    marks_only._probed, marks_only._budget = text, 0  # no budget: the one-pass marks
+    assert [m.span() for m in marks_only.finditer(text)] == spans
+
+
+def test_probing_falls_back_to_one_pass() -> None:
+    """``a*b|c`` on a run of a's ending in "c": every try reads to the end
+    and fails, which would be quadratic; the shared budget runs out and the
+    one-pass marks take over, so 100 000 characters stay fast."""
+    seconds, out = timed("a*(a*)*b|c", "a" * 100_000 + "c")
+    assert out == ["100001 1 1 1 1 2", "2"]
+    assert seconds < 5.0

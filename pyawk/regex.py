@@ -81,6 +81,7 @@ import re
 import weakref
 from collections.abc import Callable, Iterator
 from functools import lru_cache
+from typing import Literal
 
 from .errors import AwkRuntimeError
 
@@ -794,7 +795,31 @@ class _DFA:
         self.nfa = nfa
         self.inject = frozenset((nfa.start,)) if unanchored else frozenset()
         self.cache: dict[tuple[frozenset[int], bool], _DState] = {}
-        self.initial_states: dict[bool, _DState] = {}
+        self.initial_states: dict[bool | None, _DState] = {}
+        self.skip = self._skipper() if unanchored else None
+
+    def _skipper(self) -> re.Pattern[str] | None:
+        """A Python regex matching any character that can begin a match.
+
+        An unanchored scan spends most of its time "idle": in the state that
+        holds just the start state's closure, waiting for a character that
+        can begin a match.  Characters that cannot leave it idle can be
+        skipped with this regex, which searches in C.  None when skipping
+        would not help (a set like ``.`` or ``[^x]``, or a pattern that
+        matches the empty string, which is never idle).
+        """
+        chars, accept = self.closure(frozenset((self.nfa.start,)), False, False)
+        sets = [self.nfa.sets[c] for c in chars]
+        if accept or not sets or any(c.negated for c in sets):  # type: ignore[union-attr]
+            return None
+        return re.compile("|".join(_emit(c) for c in sets), re.DOTALL)
+
+    def idle(self) -> _DState:
+        """The state of an unanchored scan between possible matches (not at the start)."""
+        d = self.initial_states.get(None)
+        if d is None:
+            d = self.initial_states[None] = self.state(frozenset((self.nfa.start,)), False)
+        return d
 
     def initial(self, at_start: bool) -> _DState:
         """The state before reading anything; ``at_start``: at the text's start, so ``^`` holds."""
@@ -844,6 +869,42 @@ class _DFA:
                 stack.append(out1[s])
         return tuple(sorted(chars)), accept
 
+    def scan(self, s: str, marks: bytearray | None) -> bool:
+        """Run this (unanchored) DFA over ``s``, from position 0.
+
+        With ``marks`` None: stop and return True at the first position where
+        a match ends (False if there is none).  Otherwise record every such
+        position p as ``marks[len(s) - p] = 1`` and return False; for the
+        reversed DFA, scanning the reversed text, len(s) - p is the position
+        in the original text where a match starts (see LongestPattern.starts).
+        """
+        n = len(s)
+        d = self.initial(True)
+        step = self.step
+        skip, idle = self.skip, self.idle()
+        i = 0
+        while i < n:
+            if d.accept:
+                if marks is None:
+                    return True
+                marks[n - i] = 1
+            if d is idle and skip is not None:
+                # Nothing can happen until a character that may begin a
+                # match: let Python's C code find the next one.
+                m = skip.search(s, i)
+                if m is None:
+                    break  # still idle at the end, as if we had read the rest
+                i = m.start()
+            ch = s[i]
+            nxt = d.next.get(ch)  # an unanchored DFA never gets stuck,
+            d = nxt if nxt is not None else step(d, ch)  # type: ignore[assignment]  # so None means "not cached"
+            i += 1
+        if d.accept_end:  # at the end of the text (``$`` holds)
+            if marks is None:
+                return True
+            marks[0] = 1
+        return False
+
     def step(self, d: _DState, ch: str) -> _DState | None:
         """The state after reading ``ch`` in state ``d`` (None: no match possible)."""
         sets, out1 = self.nfa.sets, self.nfa.out1
@@ -888,6 +949,8 @@ class LongestPattern:
         self._twin: LongestPattern | None = None
         self._marked: str | None = None  # the string self._marks belongs to
         self._marks = bytearray()
+        self._probed: str | None = None  # the string self._budget belongs to
+        self._budget = 0
 
     def dfas(self) -> list[_DFA]:
         """The automata built so far (for tests)."""
@@ -924,14 +987,7 @@ class LongestPattern:
         dfa = self._scan
         if dfa is None:
             dfa = self._scan = _DFA(self.nfa, unanchored=True)
-        d = dfa.initial(True)
-        step = dfa.step
-        for ch in s:
-            if d.accept:
-                return True
-            nxt = d.next.get(ch)  # an unanchored DFA never gets stuck,
-            d = nxt if nxt is not None else step(d, ch)  # type: ignore[assignment]  # so None means "not cached"
-        return True if d.accept_end else None
+        return True if dfa.scan(s, None) else None
 
     def starts(self, s: str) -> bytearray:
         """marks[i] == 1 where some match of the pattern starts at position i.
@@ -949,19 +1005,8 @@ class LongestPattern:
         dfa = self._rev
         if dfa is None:
             dfa = self._rev = _DFA(_NFA(_reverse(self.tree)), unanchored=True)
-        n = len(s)
-        marks = bytearray(n + 1)
-        d = dfa.initial(True)
-        step = dfa.step
-        i = n
-        for ch in reversed(s):
-            if d.accept:
-                marks[i] = 1
-            nxt = d.next.get(ch)
-            d = nxt if nxt is not None else step(d, ch)  # type: ignore[assignment]
-            i -= 1
-        if d.accept_end:
-            marks[0] = 1
+        marks = bytearray(len(s) + 1)
+        dfa.scan(s[::-1], marks)  # ``s[::-1]``: s reversed (a C-speed copy)
         self._marked, self._marks = s, marks
         return marks
 
@@ -972,14 +1017,82 @@ class LongestPattern:
             if m is None:
                 return None
             start = m.start()
-        else:
-            # A match starting at i never looks at text before i (EREs
-            # have no look-behind; ``^`` only checks i == 0), so the marks
-            # do not depend on pos.  ``bytearray.find`` scans in C.
-            start = self.starts(s).find(1, pos)
-            if start < 0:
-                return None
+        elif s is not self._marked:
+            span = self._probe(s, pos)
+            if span is not False:
+                return span
+        # A match starting at i never looks at text before i (EREs have no
+        # look-behind; ``^`` only checks i == 0), so the marks do not depend
+        # on pos.  ``bytearray.find`` scans in C.
+        start = start if self.py is not None else self.starts(s).find(1, pos)
+        if start < 0:
+            return None
         return Span(s, start, self.longest(s, start))
+
+    def _probe(self, s: str, pos: int) -> Span | None | Literal[False]:
+        """Try to find the leftmost match the quick way, on a work budget.
+
+        Usually only a few positions can begin a match (those holding a
+        character from the pattern's first set, which a Python regex finds
+        in C), and trying them one by one, left to right, with the anchored
+        DFA, quickly finds the leftmost one.  But each failed try may read
+        far ahead, so this is quadratic in the worst case: the tries are
+        therefore given a budget of characters, shared by all searches in
+        the same string (gsub, split and FS search it again and again) and
+        proportional to its length.  Returns the match, None if there is
+        none, or False once the budget runs out: the caller then marks all
+        the match starts in one linear pass (``starts``) instead.
+        """
+        n = len(s)
+        if s is not self._probed:
+            self._probed, self._budget = s, 2 * n + 64
+        budget = self._budget
+        if budget <= 0:
+            return False
+        dfa = self._scan
+        if dfa is None:
+            dfa = self._scan = _DFA(self.nfa, unanchored=True)
+        skip = dfa.skip
+        fwd = self.fwd
+        step = fwd.step
+        i = pos
+        while True:
+            if i == 0 or skip is None or i == n:
+                c = i  # try every position (``^`` changes the first set at 0)
+            else:
+                m = skip.search(s, i)
+                c = m.start() if m is not None else n  # n: an empty match at the end (``$``)?
+            # The anchored scan of ``longest``, counting what it reads.
+            d: _DState | None = fwd.initial(c == 0)
+            last = -1
+            j = c
+            stop = min(n, c + budget)
+            while True:
+                if j >= stop:
+                    if j == n:
+                        if d.accept_end:  # type: ignore[union-attr]
+                            last = j
+                        break
+                    self._budget = 0  # out of budget, and the answer is not known yet
+                    return False
+                if d.accept:  # type: ignore[union-attr]
+                    last = j
+                ch = s[j]
+                nxt = d.next.get(ch, _UNSEEN)  # type: ignore[union-attr]
+                if nxt is _UNSEEN:
+                    nxt = step(d, ch)  # type: ignore[arg-type]
+                if nxt is None:
+                    break
+                d = nxt  # type: ignore[assignment]
+                j += 1
+            budget -= j - c + 1
+            if last >= 0 or c >= n:
+                self._budget = budget
+                return Span(s, c, last) if last >= 0 else None
+            if budget <= 0:
+                self._budget = 0
+                return False
+            i = c + 1
 
     def finditer(self, s: str) -> Iterator[Span]:
         """Successive non-overlapping matches, left to right."""
