@@ -331,12 +331,17 @@ class IOManager:
         return reader
 
     def close(self, name: str) -> int:
-        """close(name): returns the command's exit status, 0, or -1 if not open."""
+        """close(name): returns the command's exit status, 0, or -1 if not open.
+
+        Our own pending standard output is *not* flushed first (mawk and
+        onetrue-awk don't either), so a command's output can come before
+        lines we printed after starting it.  Starting a command does flush
+        everything, so lines printed before it always come first.
+        """
         status = -1
         entry = self.outputs.pop(name, None)
         if entry is not None:
             stream, proc = entry
-            self.stdout.flush()
             try:
                 stream.close()
             except OSError:
@@ -356,7 +361,9 @@ class IOManager:
                 pass
 
     def close_all(self) -> None:
-        # Close redirections first (mawk order), then flush stdout.
+        # Close redirections first, waiting for commands to finish, then
+        # flush stdout: a command's output comes before our own buffered
+        # output (mawk and gawk; onetrue-awk flushes stdout first).
         # list(...) takes a copy of the names, because close() removes
         # entries and Python forbids changing a dict while looping over it.
         for name in list(self.outputs):

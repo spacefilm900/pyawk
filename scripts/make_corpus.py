@@ -594,6 +594,18 @@ BEGIN {
 	print "o4"
 }
 """)
+add("io", "close_pipe_order", r"""# close() waits for the command but does not flush awk's own pending
+# output first, so the command's output can come before "mid" (mawk and
+# onetrue-awk; gawk flushes first).  Starting a command does flush, so
+# "start" always comes first.
+BEGIN {
+	print "start"
+	print "pipe output" | "cat"
+	print "mid"
+	close("cat")
+	print "end"
+}
+""")
 add("io", "exit_pipe_then_stdout", r"""# At exit, open commands are closed (and waited for) before awk's own
 # buffered output is flushed (mawk and gawk; onetrue-awk flushes first).
 BEGIN {
