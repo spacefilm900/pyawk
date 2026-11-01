@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Run the golden corpus (and the imported onetrue suite) against pyawk.
+"""Run the golden corpus (and the imported onetrue and gawk suites) against pyawk.
 
 usage: scripts/run_golden.py [-v] [--diff] [--write-known-failures] [CATEGORY or CATEGORY/NAME ...]
 
 Each case's stdout must match its ``.out`` file byte for byte (those files
-were produced by a reference awk; see regen_golden.py and import_onetrue.py).
+were produced by reference awks; see regen_golden.py, import_onetrue.py
+and import_gawk.py).
 Cases whose MANIFEST.tsv status is "sorted" are compared line-order-blind,
 and "skip" cases are not run at all but counted in the "skip" column.
 
 Prints pass/fail/skip per category and exits 1 if any case fails, so it can
 be used in automation.  Failures listed in a category's KNOWN_FAILURES file
 are marked "(known)" but still count as failures here; pytest is the place
-where they are tolerated.  --write-known-failures rewrites the onetrue
-KNOWN_FAILURES file from this run's failures.
+where they are tolerated.  --write-known-failures rewrites the
+KNOWN_FAILURES file of each imported suite that was run (onetrue, gawk)
+from this run's failures.
 """
 
 from __future__ import annotations
@@ -35,7 +37,7 @@ def main() -> int:
     ap.add_argument("-v", "--verbose", action="store_true", help="list every case")
     ap.add_argument("--diff", action="store_true", help="show a diff for failures")
     ap.add_argument("--write-known-failures", action="store_true",
-                    help="record this run's onetrue failures in awk_tests/onetrue/KNOWN_FAILURES")
+                    help="record this run's failures in each imported suite's KNOWN_FAILURES")
     ap.add_argument("cases", nargs="*")
     opts = ap.parse_args()
     # List comprehension: keep the cases the user selected (all, by default).
@@ -75,7 +77,7 @@ def main() -> int:
     for cat in harness.ALL_CATEGORIES:
         p, f, s = passed[cat], len(failed[cat]), skipped[cat]
         if p or f or s:
-            # Long failure lists (the onetrue suite) are only counted here.
+            # Long failure lists (the imported suites) are only counted here.
             names = f"   ({', '.join(failed[cat])})" if 0 < f <= 10 else ""
             print(f"{cat:<12} {p:>5} {f:>5} {s:>5}" + names)
         total_p += p
@@ -84,10 +86,16 @@ def main() -> int:
     print(f"{'TOTAL':<12} {total_p:>5} {total_f:>5} {total_s:>5}")
 
     if opts.write_known_failures:
-        path = harness.ONETRUE / "KNOWN_FAILURES"
-        lines = ["# onetrue cases pyawk currently fails; written by scripts/run_golden.py --write-known-failures"]
-        path.write_text("\n".join([*lines, *failed["onetrue"]]) + "\n")
-        print(f"wrote {len(failed['onetrue'])} names to {path}")
+        # ``.items()`` gives (name, directory) pairs.  Only suites that ran in
+        # full are rewritten: "run_golden.py gawk" leaves the onetrue list
+        # alone, and running a single case "gawk/NAME" changes nothing.
+        for cat, directory in harness.IMPORTED.items():
+            if opts.cases and cat not in opts.cases:
+                continue
+            path = directory / "KNOWN_FAILURES"
+            lines = [f"# {cat} cases pyawk currently fails; written by scripts/run_golden.py --write-known-failures"]
+            path.write_text("\n".join([*lines, *failed[cat]]) + "\n")
+            print(f"wrote {len(failed[cat])} names to {path}")
     return 1 if total_f else 0
 
 

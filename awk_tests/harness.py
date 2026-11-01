@@ -21,6 +21,14 @@ from onetrue-awk by scripts/import_onetrue.py.  It uses the same files plus:
   one per line (``#`` starts a comment).  pytest reports them as expected
   failures, so the suite stays green while they are being fixed, and
   complains as soon as one starts passing so the list stays accurate.
+
+A third suite, ``awk_tests/gawk/``, holds tests imported from GNU awk's
+test directory by scripts/import_gawk.py.  It uses everything above plus:
+
+* ``<name>.stdin`` (optional): data fed to the program on standard input.
+  gawk's test rules mostly run ``gawk -f T.awk < T.in``, so those cases
+  have a ``.stdin`` file and an empty ``.operands`` file (no file names on
+  the command line).  Without ``.stdin`` the program gets empty input.
 """
 
 # Treat type hints as text, so newer syntax such as ``list[str]`` is allowed.
@@ -38,13 +46,17 @@ GOLDEN = ROOT / "golden"
 REPO = ROOT.parent
 CATEGORIES = ("basic", "fields", "patterns", "control", "arrays", "builtins", "functions", "ranges", "one_liners")
 ONETRUE = ROOT / "onetrue"
-# Every category we know about: the golden ones plus the imported suite.
-ALL_CATEGORIES = (*CATEGORIES, "onetrue")
+GAWK = ROOT / "gawk"
+# The imported suites (not under golden/), keyed by category name.
+IMPORTED = {"onetrue": ONETRUE, "gawk": GAWK}
+# Every category we know about: the golden ones plus the imported suites.
+ALL_CATEGORIES = (*CATEGORIES, *IMPORTED)
 
 
 def category_dir(cat: str) -> Path:
-    """Where a category's files live (the onetrue suite is not under golden/)."""
-    return ONETRUE if cat == "onetrue" else GOLDEN / cat
+    """Where a category's files live (the imported suites are not under golden/)."""
+    # ``d.get(key, default)``: the imported suite's directory, else golden/<cat>.
+    return IMPORTED.get(cat, GOLDEN / cat)
 
 
 # ``@dataclass`` generates the constructor from the annotated fields below,
@@ -78,6 +90,11 @@ class Case:
         """The input files to name on the command line (usually just .in)."""
         p = self.path(".operands")
         return shlex.split(p.read_text()) if p.exists() else [f"{self.name}.in"]
+
+    def stdin_data(self) -> str | None:
+        """What to feed on standard input (from ``.stdin``), or None for nothing."""
+        p = self.path(".stdin")
+        return p.read_text(encoding="utf-8", errors="surrogateescape") if p.exists() else None
 
     def command(self, awk: list[str]) -> list[str]:
         # ``[*a, *b, ...]`` builds one list from the items of a, then b, etc.
@@ -171,12 +188,14 @@ def run_case(case: Case, awk: list[str], timeout: float = 20.0) -> subprocess.Co
     """Run one case with the given awk command and capture its output.
 
     PYTHONPATH lets ``python -m pyawk`` find the package without installing
-    it; LC_ALL=C gives every awk the same, simple locale.  stdin is empty so
-    a program that wrongly reads it cannot hang.
+    it; LC_ALL=C gives every awk the same, simple locale.  stdin is the
+    case's ``.stdin`` data if it has one, and otherwise empty, so a program
+    that wrongly reads it cannot hang.
     """
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO) + os.pathsep + env.get("PYTHONPATH", "")
     env["LC_ALL"] = "C"
+    data = case.stdin_data()
     return subprocess.run(
         case.command(awk),
         cwd=case.directory,
@@ -186,5 +205,8 @@ def run_case(case: Case, awk: list[str], timeout: float = 20.0) -> subprocess.Co
         errors="surrogateescape",
         timeout=timeout,
         env=env,
-        stdin=subprocess.DEVNULL,
+        # ``input=`` sends that text to the program's stdin; ``input=None``
+        # (no .stdin file) still connects stdin, so give it /dev/null instead.
+        input=data,
+        stdin=subprocess.DEVNULL if data is None else None,
     )

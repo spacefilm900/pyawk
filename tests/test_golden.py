@@ -1,7 +1,7 @@
 """Run every golden case through the pyawk CLI.
 
-That is awk_tests/golden/* plus the imported onetrue-awk suite in
-awk_tests/onetrue/.  For the onetrue suite, MANIFEST.tsv marks cases to
+That is awk_tests/golden/* plus the imported suites in awk_tests/onetrue/
+(onetrue-awk) and awk_tests/gawk/ (GNU awk).  For those, MANIFEST.tsv marks cases to
 skip (deferred features, nondeterminism, reference disagreements) and
 KNOWN_FAILURES lists cases pyawk is known to get wrong; those are reported
 as expected failures ("xfail").  ``strict=True`` turns an unexpected pass
@@ -9,6 +9,7 @@ into a failure, so a fix forces the list to be updated.
 """
 
 import difflib
+import re
 
 import pytest
 
@@ -42,18 +43,32 @@ def test_golden(case: harness.Case) -> None:
         pytest.fail(f"output mismatch for {case.id}\n{diff}\nstderr: {proc.stderr}")
 
 
+# Operands that upstream passes on purpose but the program never opens as
+# files: compare.awk clears ARGV[1] and ARGV[2] in BEGIN, and argcasfile
+# sets ARGC=1 so the missing file after it is never read.
+NOT_FILES = {"gawk/compare": {"0", "1"}, "gawk/argcasfile": {" /no/such/file"}}
+
+
 def test_corpus_is_complete() -> None:
     for case in CASES:
         for operand in case.operands():
-            assert (case.directory / operand).exists(), case.id
+            # "-" is standard input, and "NAME=value" is an awk variable
+            # assignment rather than a file name.
+            if operand == "-" or re.match(r"[A-Za-z_][A-Za-z0-9_]*=", operand):
+                continue
+            if operand in NOT_FILES.get(case.id, set()):
+                continue
+            assert (case.directory / operand).exists(), (case.id, operand)
         assert case.path(".out").exists(), case.id
     assert {c.category for c in CASES} == set(harness.ALL_CATEGORIES)
 
 
-def test_manifest_covers_onetrue_suite() -> None:
+# ``parametrize`` runs the test once per imported suite.
+@pytest.mark.parametrize("category", list(harness.IMPORTED))
+def test_manifest_covers_imported_suite(category: str) -> None:
     """Every imported case has a manifest row with a known status."""
-    manifest = harness.read_manifest(harness.ONETRUE)
-    names = {c.name for c in CASES if c.category == "onetrue"}
+    manifest = harness.read_manifest(harness.IMPORTED[category])
+    names = {c.name for c in CASES if c.category == category}
     assert names == set(manifest), names ^ set(manifest)
     assert {status for status, _ in manifest.values()} <= {"run", "sorted", "skip"}
     # Every skip must say why.
