@@ -32,3 +32,14 @@ def test_environ_is_an_array_name() -> None:
         awk("BEGIN { ENVIRON = 1 }")
     with pytest.raises(AwkRuntimeError):
         awk("BEGIN { print ENVIRON + 0 }")
+
+
+# ---------------------------------------------------------------- I/O
+@pytest.mark.parametrize(
+    "prog",
+    ['BEGIN { getline x < "" }', 'BEGIN { getline < "" }', 'BEGIN { "" | getline }', 'BEGIN { print "x" | "" }'],
+)
+def test_null_file_or_command_name_is_an_error(prog: str) -> None:
+    # onetrue-awk and gawk stop with a fatal error (mawk returns -1 / 0).
+    with pytest.raises(AwkRuntimeError, match="null"):
+        awk(prog)

@@ -260,6 +260,13 @@ def _wait_status(proc: subprocess.Popen[Any]) -> int:
     return rc if rc >= 0 else 256 - rc
 
 
+def _check_name(name: str, what: str) -> None:
+    """Refuse an empty file or command name, as onetrue-awk and gawk do
+    (mawk quietly fails instead: getline returns -1, print does nothing)."""
+    if name == "":
+        raise AwkRuntimeError(f"null file name in {what} redirection")
+
+
 # ---------------------------------------------------------------- output
 class IOManager:
     """Tracks redirected output streams and getline input streams by name.
@@ -287,6 +294,7 @@ class IOManager:
         entry = self.outputs.get(name)
         if entry is not None:
             return entry[0]
+        _check_name(name, "print")
         # "-" is *not* standard output here: mawk and onetrue-awk write to a
         # file called "-" (only gawk treats it as stdout).  For getline,
         # "-" does mean standard input (get_input_file).
@@ -314,6 +322,7 @@ class IOManager:
         reader = self.inputs.get(name)
         if reader is not None:
             return reader
+        _check_name(name, "getline")
         if name in ("-", "/dev/stdin"):
             return self.get_stdin_reader()
         try:
@@ -326,6 +335,7 @@ class IOManager:
     def get_input_cmd(self, cmd: str) -> RecordReader:
         reader = self.inputs.get(cmd)
         if reader is None:
+            _check_name(cmd, "getline")
             self.flush_all()
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
             assert proc.stdout is not None
