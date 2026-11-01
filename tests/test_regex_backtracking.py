@@ -186,6 +186,54 @@ def test_dfa_cache_limit_stays_linear_and_correct(monkeypatch: pytest.MonkeyPatc
     assert max(len(d.cache) for d in lp.dfas()) <= 64
 
 
+def test_dfa_cache_limit_really_bounds_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Emptying the cache must let the old states go (CodeRabbit, PR #1).
+
+    A scan in progress holds on to one old state (its current one, and the
+    "idle" state), and old states keep their transitions, which link them
+    to every state built later; so if those links stay, nothing built
+    during a long scan is ever freed.  Count the live DFA states (with a
+    garbage collection each time the cache is emptied) during one long
+    search: they must stay a small multiple of the limit."""
+    import gc
+    import random
+
+    from pyawk import regex
+
+    live = [0]  # live _DState objects; a list so the class below can change it
+    peak = [0]
+
+    class CountedState(regex._DState):
+        __slots__ = ()
+
+        def __init__(self, *args: object) -> None:
+            super().__init__(*args)  # type: ignore[arg-type]
+            live[0] += 1
+
+        def __del__(self) -> None:
+            live[0] -= 1
+
+    original_state = regex._DFA.state
+
+    def state(self: regex._DFA, kernel: frozenset[int], at_start: bool) -> regex._DState:
+        full = len(self.cache) >= regex._DFA_LIMIT
+        d = original_state(self, kernel, at_start)
+        if full:  # the cache was just emptied: what is still alive?
+            gc.collect()
+            peak[0] = max(peak[0], live[0])
+        return d
+
+    monkeypatch.setattr(regex, "_DState", CountedState)
+    monkeypatch.setattr(regex._DFA, "state", state)
+    monkeypatch.setattr(regex, "_DFA_LIMIT", 64)
+    rng = random.Random(5)
+    text = "".join(rng.choice("ab") for _ in range(20_000)) + "a" + "b" * 12 + "c"
+    lp = regex.LongestPattern(parse("(a|b)*a(a|b){12}c"), None)
+    assert lp.found(text)
+    assert lp.search(text) is not None
+    assert 0 < peak[0] <= 4 * 64
+
+
 def test_regex_rs_on_long_input_is_linear() -> None:
     # A regex RS is searched over the whole (buffered) input.
     prog = 'BEGIN { RS = "(a*)*b" } { n++; len += length($0) } END { print n, len }'

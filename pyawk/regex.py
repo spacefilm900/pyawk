@@ -773,8 +773,8 @@ class _DState:
 
 # Cached DFA states per automaton.  When a pattern needs more (an automaton
 # can in principle have 2**(NFA size) states, e.g. ``(a|b)*a(a|b){20}``), the
-# cache is emptied and states are rebuilt as the text needs them.  That
-# bounds memory, and the time stays linear: each input character builds at
+# cache is emptied (see _DFA._forget) and states are rebuilt as the text
+# needs them.  That bounds memory, and the time stays linear: each input character builds at
 # most one new state, which costs time proportional to the pattern's size.
 _DFA_LIMIT = 10000
 _UNSEEN = object()  # marker: "no transition cached for this character"
@@ -835,15 +835,31 @@ class _DFA:
         d = self.cache.get(key)
         if d is None:
             if len(self.cache) >= _DFA_LIMIT:
-                # Start afresh.  States already built stay valid (a scan in
-                # progress keeps using its current one); they are simply no
-                # longer found here, and are freed once nothing uses them.
-                self.cache.clear()
-                self.initial_states.clear()
+                self._forget()
             chars, accept = self.closure(kernel, at_start, False)
             accept_end = accept or self.closure(kernel, at_start, True)[1]
             d = self.cache[key] = _DState(chars, accept, accept_end)
         return d
+
+    def _forget(self) -> None:
+        """Empty the cache to keep memory bounded on huge automata.
+
+        Emptying the dictionary is not enough on its own.  A scan in
+        progress still holds its current state and the idle state, and
+        every old state's ``next`` table links it to other states, old and
+        (soon) new; through those links the whole history would stay
+        reachable and nothing would ever be freed.  So the tables are
+        emptied too: each state then stands alone, and a scan holding one
+        simply works its transitions out again (they come out the same).
+        The initial states are kept (with empty tables), so the scans'
+        "is this the idle state?" tests stay valid.
+        """
+        keep = {id(d) for d in self.initial_states.values()}
+        kept = {key: d for key, d in self.cache.items() if id(d) in keep}
+        for d in self.cache.values():
+            d.next.clear()
+        self.cache.clear()
+        self.cache.update(kept)  # the same dict: LongestPattern.cache refers to it
 
     def closure(self, kernel: frozenset[int], at_start: bool, at_end: bool) -> tuple[tuple[int, ...], bool]:
         nfa = self.nfa
