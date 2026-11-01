@@ -152,3 +152,42 @@ def test_nextfile_rule_order(three_files: list[str]) -> None:
     # Rules after the nextfile are not run for that record, as with next.
     out = awk('{ print "first", $0 } FNR == 1 { nextfile } { print "never", $0 }', "", *three_files)[0]
     assert out == "first a1\nfirst b1\nfirst c1\n"
+
+
+# ---------------------------------------------------------------- fflush(name)
+# fflush("name") on an open output: 0 on success, -1 if the flush fails,
+# but a broken pipe is passed on so the program dies quietly by SIGPIPE.
+
+class _FailingStream(io.StringIO):
+    """A fake output stream whose flush() raises the error we give it."""
+
+    def __init__(self, error: BaseException) -> None:
+        super().__init__()
+        self.error = error
+
+    def flush(self) -> None:
+        raise self.error
+
+
+def _io_table_with(stream: io.StringIO) -> Any:
+    """An I/O table with one open output, "out", writing to ``stream``."""
+    from pyawk import runtime
+
+    table = runtime.IOManager(io.StringIO(), io.BytesIO())
+    table.outputs["out"] = (stream, None)
+    return table
+
+
+def test_named_fflush_returns_zero_on_success() -> None:
+    assert _io_table_with(io.StringIO()).flush("out") == 0
+
+
+def test_named_fflush_returns_minus_one_on_os_error() -> None:
+    # A failed flush (disk full, say) must be reported, not hidden as 0.
+    assert _io_table_with(_FailingStream(OSError(28, "No space"))).flush("out") == -1
+
+
+def test_named_fflush_lets_broken_pipe_through() -> None:
+    # A reader that has gone away must reach the CLI's SIGPIPE handling.
+    with pytest.raises(BrokenPipeError):
+        _io_table_with(_FailingStream(BrokenPipeError())).flush("out")

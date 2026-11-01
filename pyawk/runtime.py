@@ -374,7 +374,7 @@ class IOManager:
                 pass
 
     def flush(self, name: str) -> int:
-        """fflush(name): 0 if ``name`` is an open output, else -1."""
+        """fflush(name): 0 if ``name`` is an open output flushed successfully, else -1."""
         if name == "/dev/stdout":
             self.stdout.flush()
             return 0
@@ -386,8 +386,12 @@ class IOManager:
             return -1  # not open, or open only for reading
         try:
             entry[0].flush()
+        except BrokenPipeError:
+            # The reader has gone away: let this reach the CLI, which ends
+            # the program quietly the way a C awk dies of SIGPIPE.
+            raise
         except OSError:
-            pass
+            return -1  # any other failure (disk full, ...) is reported
         return 0
 
     def close_all(self) -> None:
