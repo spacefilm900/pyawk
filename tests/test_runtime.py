@@ -361,3 +361,19 @@ def test_printf_whole_format_matches_piecewise(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(builtins, "_format_plan", lambda fmt: None)
     slow = [format_printf(f, a) for f, a in cases]
     assert fast == slow
+
+
+@pytest.mark.parametrize(
+    "prog,expected",
+    [
+        # sub/gsub on $0 (the default target) read and write the record
+        # directly; the record must still be re-split and NF updated.
+        ("{ n = gsub(/ /, \"  x \"); print n, NF, $2 }", "2 5 x\n"),
+        ("{ $2 = \"q\"; print sub(/q/, \"Q\"), $0, $2 }", "1 a Q c Q\n"),
+        ("{ NF = 2; sub(/$/, \"!\"); print; print NF }", "a b!\n2\n"),
+        ("{ print sub(/z/, \"y\"), $0 }", "0 a b c\n"),
+        ("{ $0 = 12.5; sub(/5/, \"x\"); print $0, $1 + 1 }", "12.x 13\n"),
+    ],
+)
+def test_sub_on_record(prog: str, expected: str) -> None:
+    assert awk(prog, "a b c\n") == (expected, 0)

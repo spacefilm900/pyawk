@@ -611,9 +611,24 @@ def _split(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 def _sub_common(c: "Compiler", args: list[ast.Expr], global_: bool) -> Thunk:
     if bad := _arity("gsub" if global_ else "sub", args, 2, 3):
         return bad
-    pattern, repl, sval = c.regex(args[0]), c.expr(args[1]), c.sval
+    pattern, repl, sval = c.regex(args[0]), c.string(args[1]), c.sval
     # The default target is $0.
     target: ast.Expr = args[2] if len(args) == 3 else ast.Field(ast.Num(0.0))
+    if type(target) is ast.Field and _int_const_zero(target.index):
+        # $0, the commonest target: its text is it.record, so no lvalue
+        # reference is needed to read it.
+        it = c.it
+        set_field = it.set_field
+
+        def sub_record() -> Value:
+            pat = pattern()
+            r = repl()
+            result, count = substitute(pat, r, it.record, global_)
+            if count:
+                set_field(0, result)
+            return float(count)
+
+        return sub_record
     if isinstance(target, ast.LVALUE_TYPES):
         # Resolve the target once, so ``sub(/a/, "b", arr[i++])`` increments
         # i only once even though we both read and write the element.
@@ -621,7 +636,7 @@ def _sub_common(c: "Compiler", args: list[ast.Expr], global_: bool) -> Thunk:
 
         def sub() -> Value:
             pat = pattern()
-            r = sval(repl())
+            r = repl()
             ref = resolve()
             result, count = substitute(pat, r, sval(get_ref(ref)), global_)
             if count:  # only assign when something changed ($0 is not rebuilt otherwise)
@@ -634,12 +649,17 @@ def _sub_common(c: "Compiler", args: list[ast.Expr], global_: bool) -> Thunk:
 
     def sub_value() -> Value:
         pat = pattern()
-        r = sval(repl())
+        r = repl()
         # "_" is the conventional name for a value we ignore.
         _, count = substitute(pat, r, sval(e()), global_)
         return float(count)
 
     return sub_value
+
+
+def _int_const_zero(node: ast.Expr) -> bool:
+    """Is node the number constant 0 (as in ``$0``)?"""
+    return type(node) is ast.Num and node.value == 0.0
 
 
 def _sub(c: "Compiler", args: list[ast.Expr]) -> Thunk:
