@@ -1,0 +1,6 @@
+# Golden cases whose .out follows a decision made for this project rather
+# than the majority of the reference awks.  regen_golden.py still writes
+# their .out (mawk gives the chosen answer); `regen_golden.py --vote` lists
+# them as DECIDED instead of reporting a problem.  See DESIGN.md.
+# Format: CATEGORY/NAME  reason
+io/close_status  close() of a command returns its exit status (mawk); onetrue-awk and gawk --posix return 0

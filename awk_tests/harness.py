@@ -59,7 +59,7 @@ GOLDEN = ROOT / "golden"
 REPO = ROOT.parent
 CATEGORIES = (
     "basic", "fields", "patterns", "control", "arrays", "builtins", "functions", "ranges", "one_liners",
-    "environ",
+    "environ", "io",
 )
 ONETRUE = ROOT / "onetrue"
 GAWK = ROOT / "gawk"
@@ -178,7 +178,23 @@ def read_overrides() -> dict[str, str]:
     gawk and mawk.  Each line is ``CATEGORY/NAME  reason``; ``#`` starts a
     comment.  regen_golden.py never overwrites these ``.out`` files.
     """
-    p = GOLDEN / "OVERRIDES"
+    return _read_case_list(GOLDEN / "OVERRIDES")
+
+
+def read_decisions() -> dict[str, str]:
+    """Golden cases that follow the user's decision, not the majority.
+
+    ``golden/DECISIONS`` (same format as OVERRIDES) lists cases where the
+    references disagree with what the project chose to do, for example
+    close() returning a command's exit status.  Their ``.out`` is still
+    written by regen_golden.py (mawk gives the chosen answer); the list
+    only tells ``regen_golden.py --vote`` not to report them.
+    """
+    return _read_case_list(GOLDEN / "DECISIONS")
+
+
+def _read_case_list(p: Path) -> dict[str, str]:
+    """Read a ``CATEGORY/NAME  reason`` file into ``{case id: reason}``."""
     if not p.exists():
         return {}
     out: dict[str, str] = {}

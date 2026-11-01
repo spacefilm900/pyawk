@@ -1,0 +1,5 @@
+k1.txt: a
+k1.txt: c
+k2.txt: b
+k1.out: a
+k1.out: c

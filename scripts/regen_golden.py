@@ -47,6 +47,7 @@ def vote(cases: list[harness.Case]) -> int:
     ``.out`` that is not the majority answer) is printed and counted.
     """
     problems = 0
+    decisions = harness.read_decisions()
     for case in cases:
         outputs = {name: harness.run_case(case, cmd).stdout for name, cmd in REFERENCES.items()}
         # Group the references by identical output: {output: [names]}.
@@ -61,6 +62,8 @@ def vote(cases: list[harness.Case]) -> int:
         if len(groups[majority]) < 2:
             problems += 1
             print(f"SPLIT {case.id}: no two references agree")
+        elif case.id in decisions:
+            print(f"DECIDED {case.id}: {decisions[case.id]}")
         elif expected != majority:
             problems += 1
             print(f"WRONG {case.id}: .out is not the majority answer ({', '.join(groups[majority])})")

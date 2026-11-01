@@ -408,6 +408,234 @@ $2 > ENVIRON["PYAWK_T_NUM"] { print $1, "over" }
 END { print "limit", ENVIRON["PYAWK_T_NUM"] + 0 }
 """, "a 5\nb 12\nc 13\nd 100\ne 9\n", environ=ENVV)
 
+# ---------------- io
+# Golden cases run in a throwaway copy of the category directory, so these
+# programs may create and read back files with relative names.  Output
+# written to files is shown by reading it back with getline, after close().
+IO_LINES = "one 1\ntwo 2 x\nthree 3\n"
+DUMP = r"""function dump(f,    line) {
+	close(f)
+	while ((getline line < f) > 0)
+		print f ": " line
+	close(f)
+}
+"""
+add("io", "getline_main", r"""# Plain getline reads the next main-input record into $0 (setting NF,
+# NR and FNR); getline var sets only var, NR and FNR.  Both return 1, or
+# 0 at the end of the input.  Reading crosses into the next file.
+NR == 1 { r = getline; print "getline:", r, NR, FNR, NF, $0 }
+NR == 3 { r = getline v; print "getline v:", r, NR, FNR, NF, $0, "v=" v }
+FNR == 1 && NR > 1 { print "new file", FILENAME, NR, FNR }
+END {
+	r = getline; print "END getline:", r, NR, $0
+	r = getline v; print "END getline v:", r
+}
+""", operands="getline_main.in getline_file.in", inp=IO_LINES)
+add("io", "getline_file", r"""# getline < file reads the file's next record into $0 (and NF);
+# getline var < file sets only var.  NR and FNR do not change.  The
+# result is 1, 0 at end of file, -1 if the file cannot be read.
+{
+	f = "getline_file.in"
+	while ((r = (getline < f)) > 0)
+		print r, NR, FNR, NF, $0
+	print "end:", r, (getline < f)
+	close(f)
+	while ((getline line < f) > 0)
+		print NR, FNR, NF, $0, "[" line "]"
+	close(f)
+	getline $2 < f              # a field as the target rebuilds $0
+	print $0, NF
+	print "missing:", (getline < "no such file"), (getline line < "no such file")
+	print "directory:", (getline line < "/")
+	exit
+}
+""", "a b c\n")
+add("io", "getline_cmd", r"""# "cmd" | getline reads the command's output into $0 (and NF);
+# "cmd" | getline var sets only var.  NR and FNR are left alone (all
+# three reference awks agree, although POSIX says NR is incremented).
+{
+	cmd = "printf \"p q\\nr s t\\n\""
+	while ((cmd | getline) > 0)
+		print NR, FNR, NF, $0
+	close(cmd)
+	while ((cmd | getline line) > 0)
+		print NR, FNR, NF, $0, "[" line "]"
+	print "at end:", (cmd | getline line)
+	close(cmd)
+	# The same command string after close() runs the command again.
+	cmd | getline; print "again:", $0
+	close(cmd)
+}
+""", "x y\n")
+add("io", "getline_begin", r"""# getline in BEGIN takes the first record of the main input, so the
+# main rules start from the second; FILENAME is set by then.
+BEGIN {
+	r = getline
+	print "BEGIN:", r, FILENAME, NR, FNR, $0
+	r = getline second
+	print "BEGIN var:", r, NR, second
+}
+{ print "main:", FILENAME, NR, FNR, $0 }
+END { print "END:", (getline), NR }
+""", IO_LINES)
+add("io", "getline_stdin", r"""# With files named on the command line, "-" in getline still means
+# standard input.
+{
+	if ((getline a < "-") > 0)
+		print $0, "|", a
+}
+END { print "after:", (getline a < "-"), a }
+""", IO_LINES, stdin="s1\ns2\n")
+add("io", "getline_dev_stdin", r"""# "/dev/stdin" in getline is standard input too.
+{
+	if ((getline a < "/dev/stdin") > 0)
+		print $0, "|", a
+}
+""", IO_LINES, stdin="s1\ns2\n")
+add("io", "redirect_files", DUMP + r"""# > truncates a file only when it is first opened; later prints append
+# until close().  >> appends.  One name is one stream, whichever of > or
+# >> wrote to it first.
+BEGIN {
+	print "old" > "t1"; close("t1")
+	print "a" > "t1"; print "b" > "t1"; printf "%s-%d\n", "c", 3 > "t1"
+	dump("t1")
+	print "after close" > "t1"; dump("t1")
+	print "x" >> "t1"; printf("%s\n", "y") >> "t1"; dump("t1")
+	print "first" >> "t2"; print "second" > "t2"; dump("t2")
+	print "list", "of", "items" > "t3"; print("paren", "list") > "t3"; dump("t3")
+}
+""")
+add("io", "redirect_pipes", r"""# print | "cmd" starts the command once and feeds it every line until
+# close(), which waits for it to finish.
+BEGIN {
+	print "zebra" | "sort"
+	print "apple" | "sort"
+	printf "%s\n", "mango" | "sort"
+	close("sort")
+	print "-- sorted"
+	print "b" | "sort -r"; print "c" | "sort -r"; close("sort -r")
+	print "a" | "sort"; close("sort")
+	print "-- done"
+}
+""")
+add("io", "close_values", r"""# close() returns 0 for a file, -1 for a name that is not open, and for
+# a command its exit status.
+BEGIN {
+	print "x" > "c1"
+	print "file:", close("c1"), "again:", close("c1"), "never:", close("never opened")
+	getline line < "c1"
+	print "input file:", close("c1")
+	print "y" | "cat >/dev/null"
+	print "output pipe:", close("cat >/dev/null")
+	"echo hi" | getline line
+	print "input pipe:", close("echo hi")
+}
+""")
+add("io", "close_status", r"""# close() of a command returns its exit status (mawk; the user chose this
+# over the 0 that onetrue-awk and gawk --posix return), and 256 + N for a
+# command killed by signal N.
+BEGIN {
+	print "x" | "cat >/dev/null; exit 3"
+	print "output pipe:", close("cat >/dev/null; exit 3")
+	"echo hi; exit 5" | getline line
+	print "input pipe:", line, close("echo hi; exit 5")
+	"kill -9 $$" | getline line
+	print "killed:", close("kill -9 $$")
+}
+""")
+add("io", "system_calls", r"""# system() returns the command's exit status (256 + N if killed by
+# signal N) and flushes awk's output first, so the order is preserved and
+# the command sees what was written to files.
+BEGIN {
+	printf "before "
+	system("echo during")
+	print "after"
+	print "exit 3:", system("exit 3"), "true:", system("true")
+	print "killed:", system("kill -9 $$")
+	print "in the file" > "s1"
+	system("cat s1")
+	print "flushed"
+	system("")
+	print "end"
+}
+""")
+add("io", "fflush_calls", r"""# fflush() and fflush("") flush everything; fflush(name) flushes one
+# output file or command.  They return 0, or -1 if name is not open
+# for output (input files and commands included).
+BEGIN {
+	print "fflush():", fflush(), "fflush(\"\"):", fflush("")
+	print "stdout:", fflush("/dev/stdout"), "stderr:", fflush("/dev/stderr")
+	print "not open:", fflush("not open")
+	print "data" > "ff"
+	r = fflush("ff")
+	print "file:", r
+	system("cat ff")
+	print "p" | "cat > piped"
+	r = fflush("cat > piped")
+	print "pipe:", r
+	"echo hi" | getline line
+	print "input pipe:", fflush("echo hi")
+	close("ff")
+	getline line < "ff"
+	print "input file:", fflush("ff")
+}
+""")
+add("io", "special_files", DUMP + r"""# /dev/stdout is standard output and /dev/stderr standard error.  "-"
+# is an ordinary file name for output (mawk and onetrue-awk; only gawk
+# treats it as standard output).
+BEGIN {
+	print "o1"
+	print "o2" > "/dev/stdout"
+	printf "o3\n" > "/dev/stdout"
+	print "to stderr" > "/dev/stderr"
+	print "dash" > "-"
+	close("-")
+	system("sed 's/^/file - holds: /' ./-")
+	print "o4"
+}
+""")
+add("io", "exit_pipe_then_stdout", r"""# At exit, open commands are closed (and waited for) before awk's own
+# buffered output is flushed (mawk and gawk; onetrue-awk flushes first).
+BEGIN {
+	print "pipe output" | "cat"
+	print "awk output"
+}
+""")
+add("io", "precedence", DUMP + r"""# Redirection and getline precedence quirks:
+# print > "a" "b" writes to file "ab" (the target is a concatenation);
+# "cmd" | getline > 0 is ("cmd" | getline) > 0;
+# getline < "f" "1" is (getline < "f") "1" (mawk and gawk; onetrue-awk
+# reads file "f1").
+BEGIN {
+	print "x" > "a" "b"; dump("ab")
+	while ("echo l1; echo l2" | getline > 0) print "got", $0
+	x = "echo yo"; x | getline v; print v
+	print "q" > "f"; close("f")
+	$0 = "unchanged"; r = getline < "f" "1"; print r, $0
+	while (getline line < "ab" > 0) print "unparenthesized:", line
+}
+""")
+add("io", "pipe_getline_concat", r"""# "echo " "hi" | getline runs the command "echo hi": the concatenation
+# is the command (onetrue-awk and gawk; mawk runs "hi" and concatenates).
+BEGIN {
+	"echo " "hi" | getline
+	print
+	close("echo hi")
+	"echo " "hi" | getline line
+	print line
+}
+""")
+add("io", "redirect_concat_field", r"""# The target of > may be built from fields: one file per key.
+{ print $2 > ($1 ".txt") }
+{ print $2 > $1 ".out" }
+END {
+	close("k1.txt"); close("k2.txt"); close("k1.out")
+	while ((getline l < "k1.txt") > 0) print "k1.txt:", l
+	while ((getline l < "k2.txt") > 0) print "k2.txt:", l
+	while ((getline l < "k1.out") > 0) print "k1.out:", l
+}
+""", "k1 a\nk2 b\nk1 c\n")
+
 # ---------------- one-liners (from "The AWK Programming Language")
 add("one_liners", "count_lines", "END { print NR }\n", EMP)
 add("one_liners", "third_line", "NR == 3\n", EMP)

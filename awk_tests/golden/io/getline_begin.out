@@ -1,0 +1,4 @@
+BEGIN: 1 getline_begin.in 1 1 one 1
+BEGIN var: 1 2 two 2 x
+main: getline_begin.in 3 3 three 3
+END: 0 3

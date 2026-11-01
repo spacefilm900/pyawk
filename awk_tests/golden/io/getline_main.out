@@ -1,0 +1,5 @@
+getline: 1 2 2 3 two 2 x
+getline v: 1 4 1 2 three 3 v=a b c
+new file getline_file.in 4 1
+END getline: 0 4 three 3
+END getline v: 0
