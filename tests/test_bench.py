@@ -71,3 +71,12 @@ def test_relative_explicit_path_is_resolved_against_the_callers_directory(
 def test_absolute_explicit_path_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", fake_which({}))
     assert bench.find_awks({"mawk": "/opt/x/mawk"})["mawk"] == ["/opt/x/mawk"]
+
+
+@pytest.mark.parametrize("locale", ["C", "C.UTF-8"])
+def test_locale_is_passed_to_the_awks(locale: str) -> None:
+    # --locale sets LC_ALL for every timed command (default C, i.e. bytes).
+    _, out = bench.time_one(["sh", "-c", 'printf %s "$LC_ALL"'], runs=1, locale=locale)
+    assert out == locale.encode()
+    _, out = bench.time_one(["sh", "-c", 'printf %s "$LC_ALL"'], runs=1)
+    assert out == b"C"

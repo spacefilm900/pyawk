@@ -2,7 +2,8 @@
 """Benchmark pyawk against the reference awks on representative workloads.
 
 usage: scripts/bench.py [--lines N] [--runs R] [--only NAME,...] [--awks pyawk,mawk,...]
-                        [--path NAME=PROGRAM ...] [--save LABEL] [--compare LABEL]
+                        [--path NAME=PROGRAM ...] [--locale LOCALE]
+                        [--save LABEL] [--compare LABEL]
 
 Each workload is an AWK program plus (usually) a generated input file.  The
 inputs are made by a seeded random generator, so every run of this script
@@ -21,6 +22,10 @@ The reference awks are found by name on PATH (``mawk``; ``gawk``, run with
 ``bwk-awk``), and by default every one that is installed is timed.
 ``--path NAME=PROGRAM`` points at one that is not on PATH, for example
 ``--path onetrue=$HOME/src/onetrue-awk/a.out``.
+
+Every awk runs with ``LC_ALL=C`` (bytes) unless ``--locale`` names another
+locale, e.g. ``--locale C.UTF-8`` to time pyawk's UTF-8 (characters) mode.
+The generated input is plain ASCII, so the outputs agree in either mode.
 
 ``--save LABEL`` stores the timings in ``.bench/LABEL.json``;
 ``--compare LABEL`` adds a column with the speedup of pyawk relative to a
@@ -162,11 +167,15 @@ def make_input(lines: int) -> Path:
     return path
 
 
-def time_one(cmd: list[str], runs: int) -> tuple[float, bytes]:
-    """Best wall-clock time of ``runs`` runs, plus the output of the last one."""
+def time_one(cmd: list[str], runs: int, locale: str = "C") -> tuple[float, bytes]:
+    """Best wall-clock time of ``runs`` runs, plus the output of the last one.
+
+    ``locale`` becomes LC_ALL for the command, which decides whether awks
+    work on bytes ("C") or on characters (a UTF-8 locale).
+    """
     best = float("inf")
     out = b""
-    env = dict(os.environ, LC_ALL="C", PYTHONPATH=str(REPO))
+    env = dict(os.environ, LC_ALL=locale, PYTHONPATH=str(REPO))
     for _ in range(runs):
         with tempfile.TemporaryFile() as tmp:
             start = time.perf_counter()
@@ -188,6 +197,7 @@ def main() -> int:
     ap.add_argument("--awks", help="comma-separated awks to time (default: all that are found)")
     ap.add_argument("--path", action="append", default=[], metavar="NAME=PROGRAM",
                     help="where to find a reference awk (mawk, gawk, onetrue); repeatable")
+    ap.add_argument("--locale", default="C", help="LC_ALL for every awk (default C; try C.UTF-8)")
     ap.add_argument("--save", metavar="LABEL", help="save timings to .bench/LABEL.json")
     ap.add_argument("--compare", metavar="LABEL", help="show pyawk speedup against a saved run")
     opts = ap.parse_args()
@@ -213,7 +223,7 @@ def main() -> int:
     header = ["workload"] + awks + ([f"pyawk/{ref}"] if "pyawk" in awks and ref else [])
     if baseline:
         header.append(f"speedup vs {opts.compare}")
-    print(f"# {opts.lines} input lines, best of {opts.runs} runs, seconds\n")
+    print(f"# {opts.lines} input lines, best of {opts.runs} runs, seconds, LC_ALL={opts.locale}\n")
     print("| " + " | ".join(header) + " |")
     print("|" + "---|" * len(header))
     for w in selected:
@@ -221,7 +231,7 @@ def main() -> int:
         times: dict[str, float] = {}
         outputs: dict[str, bytes] = {}
         for name in awks:
-            times[name], outputs[name] = time_one(available[name] + [w.program] + files, opts.runs)
+            times[name], outputs[name] = time_one(available[name] + [w.program] + files, opts.runs, opts.locale)
         results[w.name] = times
         cells = [w.name]
         for name in awks:
