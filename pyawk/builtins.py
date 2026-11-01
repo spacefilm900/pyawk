@@ -827,12 +827,25 @@ def _close(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 def _fflush(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     if bad := _arity("fflush", args, 0, 1):
         return bad
-    it = c.it
+    it, sval = c.it, c.sval
 
-    def fflush() -> Value:
+    # fflush() and fflush(""): flush everything (POSIX 2024; gawk and mawk).
+    def fflush_all() -> Value:
         it.io.flush_all()
         sys.stdout.flush()
         return 0.0
+
+    if not args:
+        return fflush_all
+    e = c.expr(args[0])
+
+    # fflush(name): flush one output file or command; -1 if it isn't open
+    # for output (mawk and gawk; onetrue-awk returns 0 for input streams).
+    def fflush() -> Value:
+        name = sval(e())
+        if name == "":
+            return fflush_all()
+        return float(it.io.flush(name))
 
     return fflush
 

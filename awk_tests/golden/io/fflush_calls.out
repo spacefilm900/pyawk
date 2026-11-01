@@ -1,0 +1,8 @@
+fflush(): 0 fflush(""): 0
+stdout: 0 stderr: 0
+not open: -1
+file: 0
+data
+pipe: 0
+input pipe: -1
+input file: -1

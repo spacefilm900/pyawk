@@ -360,6 +360,23 @@ class IOManager:
             except OSError:
                 pass
 
+    def flush(self, name: str) -> int:
+        """fflush(name): 0 if ``name`` is an open output, else -1."""
+        if name == "/dev/stdout":
+            self.stdout.flush()
+            return 0
+        if name == "/dev/stderr":
+            sys.stderr.flush()
+            return 0
+        entry = self.outputs.get(name)
+        if entry is None:
+            return -1  # not open, or open only for reading
+        try:
+            entry[0].flush()
+        except OSError:
+            pass
+        return 0
+
     def close_all(self) -> None:
         # Close redirections first, waiting for commands to finish, then
         # flush stdout: a command's output comes before our own buffered
