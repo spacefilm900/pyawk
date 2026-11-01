@@ -642,7 +642,7 @@ differential runs:
 | `printf "%5%"` | `%` | error |
 | `index(s, "")` | 0 | 0 (consistent, but untested: unspecified) |
 | `**`, `**=` | accepted | syntax error |
-| Output ordering of `| cmd` vs stdout | pipes closed before stdout flush | same (tests `close()` explicitly anyway) |
+| Output ordering of `\| cmd` vs stdout | pipes closed before stdout flush | same (tests `close()` explicitly anyway) |
 
 When a second reference awk is available, `scripts/regen_golden.py --check
 --awk gawk` shows where the corpus depends on implementation choices.
@@ -701,5 +701,7 @@ gives `""`. Tests: `tests/test_runtime.py`, golden `builtins/substr_clamp`
   as a whole pattern or an assigned value; in other places (`if ((a, b))`,
   `x = 1 + (a, b)`) it is a run-time error when reached, whereas the
   reference awks reject the program at parse time.
-* Performance: still roughly 5–15× slower than mawk and gawk on
-  record-processing workloads (see "Performance").
+* Performance: roughly 4–15× slower than mawk and 1–13× slower than
+  `gawk --posix` on the benchmark workloads (gawk is itself slow on the
+  regex and gsub ones, where pyawk is only 1.1× and 1.4× behind; see
+  "Performance").
