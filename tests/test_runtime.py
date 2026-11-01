@@ -314,3 +314,50 @@ def test_default_fs_split(text: str, expected: str) -> None:
 )
 def test_field_string_paths(prog: str, expected: str) -> None:
     assert awk(prog, "0x1 -1 abcd\n") == (expected, 0)
+
+
+@pytest.mark.parametrize(
+    "prog,expected",
+    [
+        # Assignment statements have their own closures (_assign_stmt);
+        # these check order of evaluation and conversions match mawk.
+        ("BEGIN { x += x += 2; print x; y = 1; y += y += 2; print y }", "4\n6\n"),
+        ("BEGIN { i = 5; a[i++] += i; for (k in a) print k, a[k] }", "5 6\n"),
+        ('BEGIN { s = "3x"; s += 1; t = "abc"; t -= 1; u ^= 2; v %= 3; print s, t, u, v }', "4 -1 0 0\n"),
+        ("function f(p) { p += 1; q += p; return p } BEGIN { print f(2), q }", "3 3\n"),
+    ],
+)
+def test_assignment_statements(prog: str, expected: str) -> None:
+    assert awk(prog) == (expected, 0)
+
+
+def test_assignment_statement_to_array_name_fails() -> None:
+    with pytest.raises(AwkRuntimeError):
+        awk("BEGIN { a[1] = 1; a += 2 }")
+
+
+def test_printf_whole_format_matches_piecewise(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The one-shot "%" path (builtins._format_plan) must give exactly what
+    formatting conversion by conversion gives, for every kind of argument."""
+    from pyawk import builtins
+    from pyawk.values import StrNum
+
+    formats = [
+        "%-10s|%8.2f|%5d|%x\n", "%s %s", "%d%%%i", "%5.1e %G %g", "%o %X %u", "%+d % d %05d",
+        "%-5x|%3s|%.2s", "a %z b %d", "%d %d %d", "%f", "%10.3F",
+    ]
+    values = [
+        0.0, -0.0, 1.0, -1.0, 255.0, -255.0, 3.75, -2.5, 1e30, -1e30, float("inf"), float("-inf"),
+        float("nan"), "abc", "", "12x", StrNum(" 42 ", 42.0), StrNum("1e3", 1000.0),
+    ]
+    cases = []
+    for fmt in formats:
+        n = fmt.count("%") - 2 * fmt.count("%%")
+        for i in range(len(values)):
+            args = [values[(i + j) % len(values)] for j in range(n)]
+            cases.append((fmt, args))
+            cases.append((fmt, args[:-1]))  # one argument missing
+    fast = [format_printf(f, a) for f, a in cases]
+    monkeypatch.setattr(builtins, "_format_plan", lambda fmt: None)
+    slow = [format_printf(f, a) for f, a in cases]
+    assert fast == slow

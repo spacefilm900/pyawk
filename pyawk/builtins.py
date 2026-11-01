@@ -145,6 +145,63 @@ def _parse_format(fmt: str) -> list[str | _Spec]:
     return pieces
 
 
+# For many formats, e.g. "%-10s|%8.2f|%5d\n", *every* conversion is one
+# that Python's ``%`` renders exactly as C does.  Then the whole format can
+# be handed to Python in one go: ``"%-10s|%8.2f|%5d\n" % (s, x, n)``, which
+# is much quicker than formatting piece by piece.  The "plan" for such a
+# format is that Python format string plus one letter per conversion
+# saying how to prepare its argument: "s" string, "f" floating point,
+# "d" signed integer, "u" unsigned integer (%o %u %x %X).  Formats with
+# %c, "*" or a conversion needing _format_c_int have no plan (None).
+_PLAN_CACHE: dict[str, tuple[str, str] | None] = {}
+
+
+def _format_plan(fmt: str) -> tuple[str, str] | None:
+    if fmt in _PLAN_CACHE:
+        return _PLAN_CACHE[fmt]
+    py: list[str] = []
+    kinds: list[str] = []
+    plan: tuple[str, str] | None = None
+    for piece in _parse_format(fmt):
+        if type(piece) is str:
+            py.append(piece.replace("%", "%%"))  # literal text; "%%" is a literal %
+            continue
+        conv, pyfmt = piece[3], piece[5]
+        if pyfmt is None:
+            break  # some conversion needs the general path
+        py.append(pyfmt)
+        kinds.append("s" if conv == "s" else "f" if conv in "eEfFgG" else "d" if conv in "di" else "u")
+    else:  # ``for ... else``: runs only when the loop did not ``break``
+        plan = ("".join(py), "".join(kinds))
+    if len(_PLAN_CACHE) >= _FORMAT_CACHE_MAX:
+        _PLAN_CACHE.clear()
+    _PLAN_CACHE[fmt] = plan
+    return plan
+
+
+def _format_whole(plan: tuple[str, str], args: list[Value], convfmt: str) -> str | None:
+    """Format with a plan (see _format_plan); None if some argument needs
+    the general path after all (inf/NaN for a float conversion, a negative
+    number for an unsigned one)."""
+    pyformat, kinds = plan
+    vals: list[object] = []
+    for kind, v in zip(kinds, args):  # zip pairs them up: (kind, arg), ...
+        if kind == "s":
+            vals.append(v if type(v) is str else to_str(v, convfmt))
+            continue
+        x = v if type(v) is float else to_num(v)
+        if kind == "f":
+            if x - x != 0.0:  # true only for inf and NaN
+                return None
+            vals.append(x)
+        else:
+            n = _to_c_int(x)  # type: ignore[arg-type]
+            if n < 0 and kind == "u":
+                return None
+            vals.append(n)
+    return pyformat % tuple(vals)
+
+
 def format_printf(fmt: str, args: list[Value], convfmt: str = "%.6g") -> str:
     """Implement AWK printf/sprintf formatting (C semantics).
 
@@ -155,6 +212,11 @@ def format_printf(fmt: str, args: list[Value], convfmt: str = "%.6g") -> str:
     the exception, see _format_c_int).  Missing arguments act as empty/zero
     rather than being an error.
     """
+    plan = _format_plan(fmt)
+    if plan is not None and len(args) >= len(plan[1]):
+        text = _format_whole(plan, args, convfmt)
+        if text is not None:
+            return text
     out: list[str] = []
     argi = 0
     nargs = len(args)
