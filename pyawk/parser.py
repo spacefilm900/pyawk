@@ -636,11 +636,29 @@ class Parser:
             self.advance()
             self.advance()
             target = self.parse_optional_lvalue()
-            left = ast.Getline("cmd", target, left)
-            # ``cmd | getline x y`` is ``(cmd | getline x) y``: the result may
-            # be concatenated with what follows (all three references).
-            while self.tok.type in CONCAT_START:
-                left = ast.Concat(left, self.parse_additive())
+            left = self.parse_operand_tail(ast.Getline("cmd", target, left))
+        return left
+
+    def parse_operand_tail(self, left: ast.Expr) -> ast.Expr:
+        """Carry on from ``cmd | getline [var]`` as from any other operand.
+
+        In the POSIX grammar ``unary_expr '|' simple_get`` is a complete
+        operand, so operators after it apply to getline's result:
+        ``cmd | getline x + 1`` is ``(cmd | getline x) + 1`` and
+        ``cmd | getline x y`` is ``(cmd | getline x) y`` (mawk and gawk;
+        onetrue-awk agrees only for concatenation).  The steps below are
+        parse_power .. parse_concat with the left operand already parsed.
+        """
+        if self.accept("^"):
+            left = ast.Binary("^", left, self.parse_power_rhs())
+        while self.at("*", "/", "%"):
+            op = self.advance().type
+            left = ast.Binary(op, left, self.parse_unary())
+        while self.at("+", "-"):
+            op = self.advance().type
+            left = ast.Binary(op, left, self.parse_multiplicative())
+        while self.tok.type in CONCAT_START:
+            left = ast.Concat(left, self.parse_additive())
         return left
 
     def parse_concat(self) -> ast.Expr:

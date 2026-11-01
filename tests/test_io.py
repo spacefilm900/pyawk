@@ -90,6 +90,28 @@ def test_reader_gone_before_final_flush_kills_us_with_sigpipe() -> None:
     assert proc.stderr.read() == ""
 
 
+@pytest.mark.parametrize(
+    ("expr", "value"),
+    [
+        ('"echo 5" | getline x + 1', "2"),
+        ('"echo 5" | getline x - 2', "-1"),
+        ('"echo 5" | getline x * 3 + 1', "4"),
+        ('"echo 5" | getline x + 1 * 3', "4"),
+        ('"echo 5" | getline x % 2', "1"),
+        ('"echo 5" | getline x ^ 2 + 1', "2"),
+        ('"echo 5" | getline x + 1 "b"', "2b"),
+        ('"echo 5" | getline x "a" + 1', "11"),
+        ('"echo 5" | getline + 1', "2"),
+        ('"echo 5" | getline x - 1 < 1', "1"),
+    ],
+)
+def test_cmd_getline_result_is_an_operand(expr: str, value: str) -> None:
+    # POSIX grammar: ``unary_expr '|' simple_get`` is a complete operand, so
+    # an arithmetic operator after it applies to getline's result (mawk and
+    # gawk; onetrue-awk rejects some of these and reads others differently).
+    assert awk(f'BEGIN {{ a = ({expr}); print a, x $0 }}')[0] == f"{value} 5\n"
+
+
 # ---------------------------------------------------------------- nextfile
 @pytest.fixture
 def three_files(tmp_path: Path) -> list[str]:
