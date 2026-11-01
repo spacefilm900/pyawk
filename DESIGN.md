@@ -345,9 +345,11 @@ shorter (`match("xabc", /a|ab/)` must give RLENGTH 2, not 1). pyawk
 therefore keeps two compiled forms of each pattern (`_compile`, cached with
 `lru_cache(512)`):
 
-* `compile_ere` gives the Python pattern. It answers every yes/no test
-  (`~`, `!~`, bare `/re/` patterns), where only the start matters, so it is
-  always correct.
+* `compile_ere` gives the form used for yes/no tests (`~`, `!~`, bare
+  `/re/` patterns), where only *whether* there is a match matters. That is
+  the Python pattern, unless backtracking could explode (see "No
+  catastrophic backtracking" below); then it is a `LongestPattern` with
+  no Python pattern at all.
 * `compile_span` serves the uses where the extent of the match matters:
   `match()`, `sub`/`gsub`, regex FS and `split()`, and regex RS.
   * It returns the same Python pattern when `_safe` proves that Python's
@@ -356,8 +358,9 @@ therefore keeps two compiled forms of each pattern (`_compile`, cached with
     single-character items with any repeat operator and anchors
     (`[0-9]+`, `^ *`, `a.*b`, `x[ab]*y?`). The bench workloads fall in this
     class.
-  * Otherwise it returns a `LongestPattern`. Python finds the start of the
-    match; a Thompson NFA, run as a lazily built DFA, then finds the
+  * Otherwise it returns a `LongestPattern`. The start of the match comes
+    from Python if the pattern is backtrack-safe, else from the automata
+    below. A Thompson NFA, run as a lazily built DFA, then finds the
     longest end from there in one left-to-right pass. DFA states are
     cached per pattern, and the cache is dropped and rebuilt after 10 000
     states.
@@ -367,6 +370,63 @@ therefore keeps two compiled forms of each pattern (`_compile`, cached with
     single-character items, plus random four-item runs and random EREs:
     24 483 patterns, 0 wrong. A small version runs in
     `tests/test_regex_engine.py`.
+
+**No catastrophic backtracking.** Python's `re` tries the ways of dividing
+the text among the repetitions one by one, so a pattern with nested or
+overlapping repetition is exponential when there is no match: `(a*)*b` on
+30 `a`s took 56 s, `(a+)+b` 32 s, `([a-z]+)*[0-9]` 38 s, `(.*)*x` 53 s.
+The reference awks use automata and answer at once. pyawk now does too:
+
+* `_backtrack_safe(tree)` decides whether Python may be trusted. A pattern
+  is safe when it is a run of items (or a top-level `|` of such runs),
+  each item a character set, an anchor, a single-character set with a
+  repeat operator, or a `|` of plain strings (at most 64 combinations in
+  all). A variable item is *forced* when its characters cannot begin
+  anything that may follow it before the next mandatory item: Python then
+  never has a choice to undo. At most one item may be *ambiguous*, and
+  every variable item after it must be forced and share no character with
+  it. With one ambiguous item the work per start position is linear, so a
+  search is at worst quadratic in the line length (`[0-9]+5\.` on a line
+  of 5s). `(a*)*b`, `(a|aa)+`, `.*x.*y` and `(a|ab)(c|bcd)*` are risky;
+  `[0-9]+`, `^(b|d)[a-z]+o$`, `foo|bar` and `a.*b` are safe. Every
+  pattern in the bench and nearly all real-world awk regexes are safe.
+* Risky patterns get a `LongestPattern` without a Python pattern. Its
+  three automata are all built lazily from the same NFA, each running in
+  time proportional to the text:
+  * `found()` (yes/no): one left-to-right pass of an *unanchored* DFA (the
+    NFA start state is put back after every character), stopping at the
+    first position where a match ends.
+  * Match starts: the pattern is reversed (`_reverse`: concatenations run
+    backwards, `^` and `$` swap) and its unanchored DFA scans the text
+    from right to left. Wherever it accepts, a match of the original
+    pattern starts. The marks are kept for the last string, so the
+    repeated searches of gsub, split and FS share one pass; the leftmost
+    mark at or after the search position is the POSIX start.
+  * The anchored DFA described above then finds the longest end.
+* Two speed-ups keep the Python per-character loop short. While an
+  unanchored scan is idle (no match in progress) it jumps to the next
+  character that can begin a match with a compiled regex of the pattern's
+  first characters, which searches in C. And `search` first tries those
+  candidate starts one by one with the anchored DFA; the tries share a
+  budget of 2n + 64 characters per string, and when it runs out the
+  one-pass marks above take over, so the worst case stays linear.
+* Long texts. Even a safe pattern is quadratic in the worst case, so for
+  texts over `LONG_TEXT` (2048) characters `for_long` swaps in an
+  automata-only twin of any pattern with a variable item: in `sub`/`gsub`,
+  `match()`, `split()`, a regex FS and a regex RS buffer. `[0-9]+5\.` on
+  100 000 fives took 49 s and now takes 0.05 s.
+* The DFA cache limit cannot cause a blow-up: when 10 000 states are
+  cached, the cache is cleared and rebuilt as the scan goes on. Each input
+  character builds at most one new state, so the cost per character is
+  bounded by the NFA size. `(a|b)*a(a|b){15}` (2^16 DFA states) runs
+  `gsub` and `~` over 100 000 random a/b characters in 0.6 s.
+
+After the change every one of those cases (`~`, `match`, `sub`, `gsub`,
+`split` and FS) takes at most a few milliseconds on 30 characters and stays
+linear at 10 000 and 100 000 (`tests/test_regex_backtracking.py`, each case
+in a child process with a timeout). The safety rule was also checked
+empirically: 968 corpus and random patterns judged safe were timed at
+growing lengths, with no superlinear growth per start position.
 
 **Parsing rules** (the majority of mawk, onetrue-awk and gawk --posix; all
 references run with LC_ALL=C):
@@ -445,7 +505,9 @@ references run with LC_ALL=C):
 
 **Differential testing.** `awk_tests/regex_corpus.py` holds the corpus:
 the curated categories alternation, nested, quantifiers, intervals,
-brackets, classes, anchors, escapes and empty, plus 279 seeded random EREs.
+brackets, classes, anchors, escapes, empty and pathological (19
+backtracking-prone patterns such as `(a*)*b`, `(a|aa)*c` and `(.*)*x` on
+30–50 character lines), plus 279 seeded random EREs.
 Each pattern runs on a set of inputs through one probe program that prints
 `~`, `match()`, `sub`, `gsub` and `split` results.
 
@@ -459,6 +521,7 @@ ordinary awk programs.
 |---|---|---|
 | before (Python `re` translation) | 105 / 551 | 1065 / 13 160 |
 | after | 0 / 551 | 0 / 13 142 (108 split or untested lines) |
+| with the pathological category | 0 / 570 | 0 / 13 503 (108 split or untested lines) |
 
 Before, by category (patterns / lines):
 
@@ -633,17 +696,41 @@ patterns. For example, `gsub(/(e|er)+[a-z]/, "X")` over 200 000 lines
 takes 0.53 s before and 0.96 s after (about 1.8×); that is the price of
 the correct result.
 
+**No catastrophic backtracking (enhancements).** Same benchmark, before
+and after routing risky patterns to the automata (`.bench/before-btfix.json`,
+`.bench/after-btfix.json`), best of 3:
+
+| workload | before | after | before/after |
+|---|---|---|---|
+| print1 | 0.364 | 0.370 | 0.98× |
+| sum | 0.398 | 0.396 | 1.01× |
+| fields | 1.892 | 1.900 | 1.00× |
+| regex | 0.562 | 0.613 | 0.92× |
+| wordcount | 1.558 | 1.548 | 1.01× |
+| printf | 0.882 | 0.864 | 1.02× |
+| gsub | 0.839 | 0.877 | 0.96× |
+| funcs | 0.467 | 0.459 | 1.02× |
+| begin_loop | 0.802 | 0.815 | 0.98× |
+
+The bench patterns are all backtrack-safe, so nothing changed for them;
+the regex and gsub gaps are noise (interleaved best-of-5 runs of the old
+and new code: regex 0.565 / 0.565–0.570 s, gsub 0.829–0.841 /
+0.848–0.856 s). Risky patterns pay a little for the Python DFA loop:
+`gsub(/(e|er)+[a-z]/, "X")` over 200 000 lines 0.95 → 1.01 s, and
+`/(foo|bar)+x/` 0.32 → 0.37 s.
+
 ## Test status
 
-pytest: 1472 passed, 121 skipped. Golden summaries: own corpus 137/137
+pytest: 1547 passed, 122 skipped. Golden summaries: own corpus 137/137
 (nine v1.0 categories with 99 cases, plus environ 5, io 18, nextfile 7 and
 regex_posix 8), onetrue-awk 215 pass / 9 skip, gawk 192 pass / 112 skip,
 no failures and empty `KNOWN_FAILURES` lists (2026-11-01, `enhancements`
-branch). The regex differential record (551 patterns, 13 142 input lines)
+branch). The regex differential record (570 patterns, 13 503 input lines)
 has no mismatches. v1.0 had 744 / 99 / 215 / 190. The extra gawk cases
 are close_status (see `close()` above) and regrange (see "Regular
 expressions"). Most of the pytest growth is the regex differential test,
-which has one case per pattern and category, plus 61 engine tests.
+which has one case per pattern and category, plus 61 engine tests and 57
+backtracking tests.
 
 Semantics settled by those fixes (all three references agree unless noted;
 otherwise the majority wins):
@@ -848,14 +935,15 @@ gives `""`. Tests: `tests/test_runtime.py`, golden `builtins/substr_clamp`
 
 * Regex: only the C locale. Characters are compared by code point; there
   is no multibyte or national-locale collation, so `[=e=]` is just `e`.
-  The match start is always found by Python's backtracking `re`. Nested
-  quantifiers can therefore blow up when there is no match: `(a*)*b`
-  against 30 `a`s takes about 55 s. This was the same before the change.
-  Fix: answer yes/no and start questions with the DFA for such patterns
-  (run a reversed automaton to find the start). The automaton's DFA cache is limited to 10 000 states per
-  pattern; a larger pattern still works but rebuilds states. Span-sensitive
-  uses of patterns that are not provably safe (`gsub(/(e|er)+[a-z]/, ...)`)
-  run about 1.8× slower than the old leftmost-first code.
+  The automaton's DFA cache is limited to 10 000 states per pattern; a
+  larger pattern still works, linearly, but rebuilds states. Patterns
+  that are not backtrack-safe run in a Python per-character loop, so they
+  are slower than Python's `re` on easy inputs (`gsub(/(e|er)+[a-z]/, ...)`
+  about 1.9× the old leftmost-first code), but never exponential. A safe
+  pattern on a text of up to 2048 characters can still be quadratic in
+  Python's `re` (a few milliseconds at that size). For a regex RS, mawk
+  itself is very slow on `RS = "(a*)*b"` over 100 000 `a`s; pyawk, gawk
+  and onetrue-awk are not.
 * `getline` updating `NF/NR/FNR` follows POSIX; `getline < file` where file is
   the current input is treated as an independent stream.
 * `srand()` seed is time-based in seconds; `rand()` uses Python's Mersenne
