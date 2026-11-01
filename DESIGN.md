@@ -21,7 +21,7 @@ program runs; the runtime then only calls those functions.
 | `regex.py` | POSIX ERE parser; Python `re` for yes/no tests, a leftmost-longest NFA/lazy-DFA engine for match spans; cached compilation |
 | `compiler.py` | `Compiler`: AST → closures (expressions, conditions, statements, function calls, lvalue references) |
 | `runtime.py` | `Interpreter` (main loop, records and fields, variables), record reader, I/O manager |
-| `builtins.py` | builtin functions (each compiles its own call), `printf` formatting, `sub/gsub` engine |
+| `builtins.py` | built-in functions (each compiles its own call), `printf` formatting, `sub/gsub` engine |
 | `cli.py` | argument parsing, `python -m pyawk` entry point |
 
 The package is named `pyawk`, so `pyawk.ast` never shadows the stdlib `ast`.
@@ -164,7 +164,7 @@ $                                   ( grouping )
   body's NEXT signal becomes a `NextFromFunction` exception (the call may
   be inside an expression), which the main loop catches to skip the
   record; from BEGIN or END it is a run-time error, as in gawk.
-* Builtin calls: the argument count is checked against `builtins.ARITY`
+* Built-in calls: the argument count is checked against `builtins.ARITY`
   (`sprintf()` with no format included); `split`'s second argument must
   be a plain name; the third argument of `sub`/`gsub` must be a variable,
   element or field and not parenthesised (`(x)` is a value in all three
@@ -185,7 +185,7 @@ onetrue-awk, gawk --posix and mawk:
 | `next` in a function | allowed (only "invoked in BEGIN or END" is undefined) | parse error | allowed; fatal if called from BEGIN/END | parse error | allowed (POSIX); run-time error if called from BEGIN/END |
 | `nextfile` in a function | undefined | parse error | allowed | parse error | parse error |
 | `(a, b)` not before `in`, not a print list, or `((a, b))` | grammar does not allow it | parse error | parse error | parse error | parse error |
-| wrong builtin argument count (`substr("a")`, `index(1)`, `close()`, `sprintf()`, `match(s, r, m)`) | grammar / function definitions | parse error | parse error | parse error | parse error |
+| wrong built-in argument count (`substr("a")`, `index(1)`, `close()`, `sprintf()`, `match(s, r, m)`) | grammar / function definitions | parse error | parse error | parse error | parse error |
 | wrong count for `length(1, 2)`, `rand(1)`, `int()`, `atan2(1)`, `sin()`, `fflush(1, 2)`, `srand(1, 2)` ... | function definitions | warning only | parse error | parse error | parse error |
 | `split(s, x[1])`, `split(s, 3)`, `split(s, (a))` | "array" argument | parse error | run-time error | parse error | parse error |
 | `sub(/a/, "b", "c")`, `1 + 2`, `x y`, `(x)`, `x++`, `length` as target | undefined | parse error | parse error for `x y`, `(x)`, `length`; else runs | parse error | parse error |
@@ -229,7 +229,7 @@ misuse (`x = 1; x[1] = 2`, a local array assigned as a scalar).
   local variables, `sub`/`gsub` on `$0`, and *string-only* uses of a
   field (array subscripts, `length`, `~`, concatenation, `index`...),
   which read the field's text without the numeric-string check.
-  Builtins are compile-time factories (`BUILTINS[name](compiler, args)`)
+  Built-ins are compile-time factories (`BUILTINS[name](compiler, args)`)
   that return the closure for one call site.
 * Assignment targets are resolved once into a reference (`resolve` /
   `get_ref` / `set_ref`) so `a[i++] += 1`, `sub(/x/, "y", $(n++))` evaluate
@@ -365,7 +365,7 @@ too deep" instead of a crash.
 | recursion depth 10 000 | crash | ok | ok | ok |
 
 All three agree (and so does pyawk) that duplicate functions, duplicate
-parameters, a parameter named like its own function, a builtin or keyword
+parameters, a parameter named like its own function, a built-in or keyword
 name, `return` outside a function, and `break`/`continue` outside a loop
 are syntax errors.
 

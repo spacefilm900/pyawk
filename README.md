@@ -29,7 +29,7 @@ assignments processed when reached, as in POSIX. Exit status is the value of
 | FS | `" "` (default whitespace), single character, a regex when longer, `""` splits characters |
 | RS | single character, `""` (paragraph mode); longer values are used as a regex (gawk extension) |
 | Arrays | associative, `(i,j)` subscripts with `SUBSEP`, `in`, `(i,j) in a`, `delete` |
-| Builtins | `length substr index split sub gsub match sprintf tolower toupper sin cos atan2 exp log sqrt int rand srand system close fflush` |
+| Built-in functions | `length substr index split sub gsub match sprintf tolower toupper sin cos atan2 exp log sqrt int rand srand system close fflush` |
 | getline | `getline`, `getline var`, `getline < file`, `getline var < file`, `cmd \| getline [var]` |
 | Output | `print`/`printf` with `> file`, `>> file`, `\| cmd`; `close()` (a command's exit status), `fflush([name])`, `/dev/stdout`, `/dev/stderr`; a closed pipe ends pyawk by SIGPIPE, as in other awks |
 | Values | dual string/number values with POSIX *strnum* semantics for fields, `getline` input, `split()` elements, `ARGV`, `-v` and operand assignments |
