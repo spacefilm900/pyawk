@@ -243,8 +243,9 @@ def main() -> int:
         RESULTS.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n")
         n_split = sum(1 for r in data["records"] for e in r["expected"] if e is None)
         print(f"wrote {RESULTS.relative_to(ROOT)}: {len(data['records'])} patterns, {n_split} split lines")
-    compare(data, args.show, args.category)
-    return 0
+    # The exit status tells scripts whether pyawk matched the record:
+    # 0 if every line agreed, 1 if any did not.
+    return 1 if compare(data, args.show, args.category) else 0
 
 
 if __name__ == "__main__":

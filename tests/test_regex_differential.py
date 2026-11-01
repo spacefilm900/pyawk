@@ -50,3 +50,25 @@ def test_corpus_and_record_agree() -> None:
     assert [(e.category, e.pattern, list(e.inputs)) for e in rc.corpus()] == [
         (r["category"], r["pattern"], r["inputs"]) for r in RECORDS
     ]
+
+
+def _load_fuzz():
+    """Import scripts/regex_fuzz.py as a module (scripts/ is not a package)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("regex_fuzz", ROOT / "scripts" / "regex_fuzz.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize("mismatches, status", [(0, 0), (3, 1)])
+def test_fuzz_check_exit_status_reports_mismatches(
+    monkeypatch: pytest.MonkeyPatch, mismatches: int, status: int
+) -> None:
+    # ``regex_fuzz.py --check`` must fail (non-zero status) when pyawk
+    # disagrees with the record, so scripts can detect it (CodeRabbit).
+    fuzz = _load_fuzz()
+    monkeypatch.setattr(fuzz, "compare", lambda data, show, category: mismatches)
+    monkeypatch.setattr(sys, "argv", ["regex_fuzz.py", "--check"])
+    assert fuzz.main() == status
