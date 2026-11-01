@@ -59,7 +59,7 @@ GOLDEN = ROOT / "golden"
 REPO = ROOT.parent
 CATEGORIES = (
     "basic", "fields", "patterns", "control", "arrays", "builtins", "functions", "ranges", "one_liners",
-    "environ", "io", "nextfile",
+    "environ", "io", "nextfile", "regex_posix",
 )
 ONETRUE = ROOT / "onetrue"
 GAWK = ROOT / "gawk"

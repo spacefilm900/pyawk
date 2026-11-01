@@ -1,0 +1,10 @@
+a|ab xabc 2 2 ab
+ab|a xabc 2 2 ab
+x(a|ab)(c|bcd) xabcd 1 5 xabcd
+(a|ab)(c|bcd) abcd 1 4 abcd
+(a*)(ab)*b aabb 1 4 aabb
+b+|a+b* xaabbb 2 5 aabbb
+a{1,2}|a{3} aaaa 1 3 aaa
+(wee|week)(knights|night) weeknights 1 10 weeknights
+(a|b)*c|(a|ab)*c abc 1 3 abc
+(.?)(a|ab) xab 1 3 xab
