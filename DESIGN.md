@@ -321,6 +321,13 @@ if mawk ever agrees). Currently: `builtins/undefined_escapes`, and
 `functions/extra_args` (mawk rejects a call with too many arguments; the
 other two warn and run it).
 
+**Imported gawk suite.** `awk_tests/gawk/` trusts gawk's `.ok` files only
+where two of the three references agree with them (see README). Open
+question it raised: in `gawk/substr`, onetrue-awk, `gawk --posix` *and*
+mawk all treat a start below 1 as 1 without shortening the length
+(`substr("abcdef", 0, 2)` is `"ab"`), unlike the POSIX reading pyawk follows
+(table above), so that case is in `KNOWN_FAILURES` until we decide.
+
 ## Known issues / limitations
 
 * Regex matching is leftmost-first (Python), not POSIX leftmost-longest:

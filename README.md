@@ -73,5 +73,23 @@ scripts/import_onetrue.py   # re-import (needs /workspace/refs/onetrue-awk/a.out
 scripts/run_golden.py onetrue --diff
 ```
 
+### Imported gawk suite
+
+`awk_tests/gawk/` holds GNU awk 5.4.1's `BASIC_TESTS` plus its `NEED_POSIX`
+tests (5.4.1 has no `POSIX_TESTS` list), imported by `scripts/import_gawk.py`
+from `test/Makefile.am`. gawk's `.ok` files mix stdout with error messages
+and an `EXIT CODE` line, and record gawk's default (extended) mode, so the
+importer uses a `.ok` only when at least two of onetrue-awk, mawk and
+`gawk --posix` produce the same stdout; otherwise it uses the references'
+majority, or skips the case. Skips (gawk extensions, locales, error-message
+tests, custom Makefile rules, ...) carry a reason in `MANIFEST.tsv`.
+Cases fed on standard input have a `NAME.stdin` file. `KNOWN_FAILURES`
+works as for the onetrue suite.
+
+```sh
+scripts/import_gawk.py      # re-import (needs /workspace/refs/src/gawk-5.4.1/test, the three awks)
+scripts/run_golden.py gawk --diff
+```
+
 See [DESIGN.md](DESIGN.md) for architecture, semantics decisions and the list
 of places where mawk (the reference used for `.out`) differs from POSIX.
