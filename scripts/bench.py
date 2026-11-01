@@ -71,6 +71,13 @@ def find_awks(paths: dict[str, str]) -> dict[str, list[str]]:
     for name, (candidates, options) in REFERENCE_AWKS.items():
         if name in paths:
             found: str | None = paths[name]
+            # The awks are run with the repository as their working
+            # directory (see time_one), so a relative path such as
+            # ./a.out must be made absolute now, against the directory the
+            # user typed it in.  A bare name (no "/") is left alone: like
+            # the shell, the system will look it up on PATH.
+            if found and os.sep in found and not os.path.isabs(found):
+                found = os.path.abspath(found)
         else:
             # ``next(..., None)``: the first candidate that is installed,
             # or None if none is.

@@ -53,3 +53,21 @@ def test_explicit_paths_override_lookup(monkeypatch: pytest.MonkeyPatch, tmp_pat
     fake.write_text("")
     awks = bench.find_awks({"onetrue": str(fake)})
     assert awks["onetrue"] == [str(fake)]
+
+
+def test_relative_explicit_path_is_resolved_against_the_callers_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The awks run with the repository as their working directory, so
+    # ``--path onetrue=./a.out`` given elsewhere must be made absolute first
+    # (CodeRabbit, PR #1).  A bare name is still looked up on PATH.
+    monkeypatch.setattr(shutil, "which", fake_which({}))
+    monkeypatch.chdir(tmp_path)
+    awks = bench.find_awks({"onetrue": "./a.out", "gawk": "gawk"})
+    assert awks["onetrue"] == [str(tmp_path / "a.out")]
+    assert awks["gawk"] == ["gawk", "--posix"]
+
+
+def test_absolute_explicit_path_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", fake_which({}))
+    assert bench.find_awks({"mawk": "/opt/x/mawk"})["mawk"] == ["/opt/x/mawk"]
