@@ -181,6 +181,14 @@ def _flatten_concat(node: ast.Expr, out: list[ast.Expr]) -> None:
     out.extend(reversed(rights))
 
 
+def _field_number(n: float) -> int:
+    """The field number for ``$n``; NaN and infinity are errors."""
+    try:
+        return int(n)
+    except (ValueError, OverflowError):
+        raise AwkRuntimeError("invalid field index") from None
+
+
 def _int_const(node: ast.Expr) -> int | None:
     """The value of a Num node that holds a small whole number, else None."""
     if type(node) is ast.Num:
@@ -274,6 +282,10 @@ class Compiler:
 
     def _s_ExprStmt(self, node: ast.ExprStmt) -> StmtFn:
         e = self.expr(node.expr, value_used=False)
+        if type(node.expr) is ast.IncDec:
+            # ``i++`` compiled with value_used=False already returns None,
+            # so it can serve as the statement itself: one call fewer.
+            return e  # type: ignore[return-value]
 
         def expr_stmt() -> None:
             e()
@@ -624,6 +636,8 @@ class Compiler:
         def compare() -> bool:
             a = left()
             b = right()
+            if type(a) is float and type(b) is float:  # the common case first
+                return test(a, b)
             if type(a) is str or type(b) is str:
                 return test(sval(a), sval(b))
             return test(
@@ -744,8 +758,31 @@ class Compiler:
                 return ""  # a field past NF is the empty string
 
             return field_const
-        get_field, index = it.get_field, self._field_index(node.index)
-        return lambda: get_field(index())
+        if k is not None:  # $0, or a negative constant (an error when run)
+            get_field, index = it.get_field, self._field_index(node.index)
+            return lambda: get_field(index())
+        e, get_field = self.expr(node.index), it.get_field
+
+        def field_var() -> Value:
+            # ``$i``: like field_const, with the index computed each time.
+            n = e()
+            if type(n) is not float:
+                n = to_num(n)
+            if 1.0 <= n < 1e9:  # type: ignore[operator]  # False for NaN
+                i = int(n) - 1  # type: ignore[arg-type]
+                fields = it.fields
+                if fields is None:
+                    fields = it.split_record()
+                if i < len(fields):
+                    v = fields[i]
+                    if v is None:
+                        v = fields[i] = make_strnum(it.field_text[i])
+                    return v
+                return ""
+            # $0, a negative index, NaN, infinity: the general path.
+            return get_field(_field_number(n))  # type: ignore[arg-type]
+
+        return field_var
 
     def _field_index(self, node: ast.Expr) -> Callable[[], int]:
         if (k := _int_const(node)) is not None:  # ``:=`` assigns inside an expression
@@ -754,11 +791,7 @@ class Compiler:
 
         def field_index() -> int:
             v = e()
-            n = v if type(v) is float else to_num(v)
-            try:
-                return int(n)  # type: ignore[arg-type]
-            except (ValueError, OverflowError):  # NaN or infinity
-                raise AwkRuntimeError("invalid field index") from None
+            return _field_number(v if type(v) is float else to_num(v))  # type: ignore[arg-type]
 
         return field_index
 
@@ -814,6 +847,33 @@ class Compiler:
         # is evaluated *before* the target is read (as in gawk, mawk and
         # BWK awk: ``x += x += 2`` with x == 1 gives 6).
         fn = ARITH[node.op[0]]
+        if tt is ast.Var and self._is_plain_global(target.name):  # type: ignore[attr-defined]
+            # ``total += x`` on a global: the common case, inlined.
+            name, vars_, new_global = target.name, self.vars, self.it.new_global_scalar  # type: ignore[attr-defined]
+
+            def assign_op_global() -> Value:
+                rhs = value()
+                if type(rhs) is not float:
+                    rhs = to_num(rhs)
+                cur = vars_.get(name)
+                if cur is None:
+                    cur = new_global(name)  # raises if name is an array
+                vars_[name] = v = fn(cur if type(cur) is float else to_num(cur), rhs)  # type: ignore[arg-type]
+                return v
+
+            return assign_op_global
+        if tt is ast.Index:
+            get_arr, key = self.array(target.name), self.subscript(target.subs)  # type: ignore[attr-defined]
+
+            def assign_op_elem() -> Value:
+                arr = get_arr()
+                k = key()
+                rhs = to_num(value())
+                cur = arr.get(k, UNINIT)
+                arr[k] = v = fn(cur if type(cur) is float else to_num(cur), rhs)  # type: ignore[arg-type]
+                return v
+
+            return assign_op_elem
         resolve, get_ref, set_ref = self.ref(target), self.get_ref, self.set_ref
 
         def assign_op() -> Value:
@@ -927,6 +987,16 @@ class Compiler:
         target = node.target
         if type(target) is ast.Var and self._is_plain_global(target.name):  # type: ignore[attr-defined]
             name, vars_, new_global = target.name, self.vars, self.it.new_global_scalar  # type: ignore[attr-defined]
+            if not value_used:
+
+                def incdec_global_stmt() -> None:
+                    # The statement ``i++``: no result needed.
+                    v = vars_.get(name)
+                    if v is None:
+                        v = new_global(name)
+                    vars_[name] = (v if type(v) is float else to_num(v)) + delta  # type: ignore[operator]
+
+                return incdec_global_stmt  # type: ignore[return-value]
 
             def incdec_global() -> Value:
                 v = vars_.get(name)
@@ -940,6 +1010,16 @@ class Compiler:
             return incdec_global
         if type(target) is ast.Index:
             get_arr, key = self.array(target.name), self.subscript(target.subs)  # type: ignore[attr-defined]
+            if not value_used:
+
+                def incdec_elem_stmt() -> None:
+                    # The statement ``count[$1]++``: no result needed.
+                    arr = get_arr()
+                    k = key()
+                    v = arr.get(k, UNINIT)
+                    arr[k] = (v if type(v) is float else to_num(v)) + delta  # type: ignore[operator]
+
+                return incdec_elem_stmt  # type: ignore[return-value]
 
             def incdec_elem() -> Value:
                 arr = get_arr()
@@ -958,6 +1038,14 @@ class Compiler:
             new = old + delta
             set_ref(ref, new)
             return new if want_new else old
+
+        if not value_used:
+            # Statements must return None (anything else would look like
+            # a break/continue/... signal to the enclosing block).
+            def incdec_stmt() -> None:
+                incdec()
+
+            return incdec_stmt  # type: ignore[return-value]
 
         return incdec
 
