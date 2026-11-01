@@ -47,6 +47,55 @@ def _to_c_int(n: float) -> int:
     return int(n)
 
 
+def _format_c_int(flags: str, width: str | None, prec: str | None, conv: str, n: int) -> str:
+    """Format the integer n like C's printf conversions %d %i %o %u %x %X.
+
+    Python's own ``%`` operator differs from C for integers: ``"%#o" % 8``
+    gives "0o10" (C: "010"), ``"%#x" % 0`` gives "0x0" (C: "0"),
+    ``"%.0d" % 0`` gives "0" (C: nothing) and the 0 flag is not ignored
+    when a precision is given.  So integers are built by hand, in C's order:
+
+    1. digits of the absolute value in the right base; the precision is the
+       minimum number of digits (zero-padded), and precision 0 with value 0
+       prints no digits at all;
+    2. ``#``: octal must start with a 0 digit; hex gets 0x/0X unless n is 0;
+    3. a sign (``-``, or ``+``/space when those flags are given) for %d/%i;
+    4. padding to the width: spaces on the right with ``-``, zeros after the
+       sign/prefix with ``0`` (ignored if a precision is given), otherwise
+       spaces on the left.
+    """
+    signed = conv in "di"
+    if not signed and n < 0:
+        n += 1 << 64  # C reinterprets negatives as unsigned 64-bit values
+    base_fmt = {"o": "o", "x": "x", "X": "X"}.get(conv, "d")
+    digits = format(abs(n), base_fmt)  # format(255, "x") == "ff"
+    if prec is not None:
+        p = int(prec or "0")  # "%.d" means precision 0
+        digits = "" if p == 0 and n == 0 else digits.rjust(p, "0")
+    prefix = ""
+    if signed:
+        if n < 0:
+            prefix = "-"
+        elif "+" in flags:
+            prefix = "+"
+        elif " " in flags:
+            prefix = " "
+    if "#" in flags:
+        if conv == "o" and not digits.startswith("0"):
+            digits = "0" + digits
+        elif conv in "xX" and n != 0:
+            prefix = "0" + conv
+    w = int(width or "0")
+    body = prefix + digits
+    if len(body) >= w:
+        return body
+    if "-" in flags:
+        return body.ljust(w)
+    if "0" in flags and prec is None:
+        return prefix + digits.rjust(w - len(prefix), "0")
+    return body.rjust(w)
+
+
 def format_printf(fmt: str, args: list[Value], convfmt: str = "%.6g") -> str:
     """Implement AWK printf/sprintf formatting (C semantics).
 
@@ -92,15 +141,9 @@ def format_printf(fmt: str, args: list[Value], convfmt: str = "%.6g") -> str:
             p = _to_c_int(to_num(next_arg()))
             prec = str(p) if p >= 0 else None
         spec = "%" + flags + (width or "") + ("." + prec if prec is not None else "")
-        if conv in "di":
+        if conv in "diouxX":
             n = _to_c_int(to_num(next_arg()))
-            out.append((spec + "d") % n)
-        elif conv in "ouxX":
-            n = _to_c_int(to_num(next_arg()))
-            # C reinterprets negative numbers as unsigned 64-bit values here.
-            if n < 0:
-                n += 1 << 64
-            out.append((spec + ("d" if conv == "u" else conv)) % n)
+            out.append(_format_c_int(flags, width, prec, conv, n))
         elif conv in "eEfFgG":
             x = to_num(next_arg())
             if math.isinf(x) or math.isnan(x):

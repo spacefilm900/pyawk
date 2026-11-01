@@ -65,6 +65,26 @@ def test_printf_formats() -> None:
     assert format_printf("%s %s", ["only"]) == "only "
 
 
+
+# (format, argument, expected) for C integer conversions; expected values
+# are what onetrue-awk, gawk --posix and mawk all print.
+C_INT_CASES = [
+    ("%#o", 0, "0"), ("%#o", 7, "07"), ("%#.0o", 0, "0"), ("%#5o", 255, " 0377"),
+    ("%#x", 0, "0"), ("%#x", 255, "0xff"), ("%#X", 7, "0X7"), ("%#05x", 7, "0x007"),
+    ("%#.3x", 0, "000"), ("%#.0x", 0, ""), ("%.0x", 0, ""),
+    ("%.0d", 0, ""), ("%5.0d", 0, "     "), ("%-5.0d|", 0, "     |"), ("%.d", 0, ""),
+    ("%+.0d", 0, "+"), ("% .0d", 0, " "),
+    ("%05.1d", 7, "    7"), ("%02.1d", 2, " 2"), ("%08.3x", 7, "     007"),
+    ("%+5.3d", -7, " -007"), ("%-+6d|", 7, "+7    |"), ("% 05d", -7, "-0007"),
+    ("%0-5d|", 7, "7    |"), ("%+u", 7, "7"), ("%.3d", -7, "-007"),
+    ("%#o", -7, "01777777777777777777771"), ("%u", -7, "18446744073709551609"),
+]
+
+
+@pytest.mark.parametrize("fmt,arg,expected", C_INT_CASES)
+def test_printf_c_integer_flags(fmt: str, arg: int, expected: str) -> None:
+    assert format_printf(fmt, [float(arg)]) == expected
+
 def test_substr_edges() -> None:
     assert substr("hello", 2, 3) == "ell"
     assert substr("hello", 0) == "hello"

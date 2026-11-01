@@ -11,8 +11,6 @@ parse1
 posix2008sub
 prec
 printf0
-printf1
 reindops
 rstest1
 zeroe0
-zeroflag
