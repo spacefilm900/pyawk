@@ -1,0 +1,10 @@
+skip_rest.in 1 1 a1
+  after a1
+skip_rest.in 2 2 a2
+first_lines.in 3 1 b1
+  after b1
+first_lines.in 4 2 b2
+skip_rest.in 5 1 a1
+  after a1
+skip_rest.in 6 2 a2
+END 6 2 skip_rest.in a2

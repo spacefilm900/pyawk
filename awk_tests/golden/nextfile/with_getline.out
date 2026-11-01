@@ -1,0 +1,5 @@
+getline: with_getline.in 2 2 a2
+lines in with_getline.in: 3
+getline: first_lines.in 4 2 b2
+lines in first_lines.in: 2
+4

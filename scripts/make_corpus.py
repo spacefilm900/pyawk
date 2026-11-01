@@ -648,6 +648,70 @@ END {
 }
 """, "k1 a\nk2 b\nk1 c\n")
 
+# ---------------- nextfile (POSIX 2024)
+# Several input files come from other cases' .in files, named in .operands.
+# (nextfile in BEGIN, END or a function is a syntax error; the golden runs
+# do not compare errors, so tests/test_parser.py checks those.)
+NF_A = "a1\na2\na3\n"
+NF_B = "b1\nb2\n"
+add("nextfile", "skip_rest", r"""# nextfile abandons the current record and the rest of its file; the
+# next record is the first of the next file, with FNR back to 1.  NR
+# counts only the records actually read.
+{ print FILENAME, NR, FNR, $0 }
+FNR == 2 { nextfile }
+{ print "  after", $0 }
+END { print "END", NR, FNR, FILENAME, $0 }
+""", NF_A, operands="skip_rest.in first_lines.in skip_rest.in")
+add("nextfile", "first_lines", r"""# The classic use: the first line of each file, without reading the rest.
+FNR == 1 { print FILENAME ": " $0; n++; nextfile }
+{ print "never", $0 }
+END { print n, "files,", NR, "records read" }
+""", NF_B, operands="skip_rest.in first_lines.in skip_rest.in")
+add("nextfile", "in_loops", r"""# nextfile leaves any loops and blocks it is inside, like next.
+{
+	for (i = 1; i <= 3; i++) {
+		while (1) {
+			if (FNR == 2) {
+				print "leaving", FILENAME, "at", $0
+				nextfile
+			}
+			print FILENAME, $0
+			break
+		}
+		break
+	}
+}
+""", NF_A, operands="in_loops.in skip_rest.in")
+add("nextfile", "assignment_operands", r"""# A var=value operand between files takes effect when the next file is
+# reached, nextfile or not.
+{ print "v=" v, FILENAME, $0; nextfile }
+""", NF_A, operands="assignment_operands.in v=1 first_lines.in v=2 assignment_operands.in")
+add("nextfile", "stdin_used_up", r"""# nextfile on standard input ("-") throws its remaining lines away: a
+# later "-" operand, or getline < "-", finds nothing (mawk and gawk;
+# onetrue-awk carries on reading).
+{ print (FILENAME == "-" ? "stdin" : FILENAME), FNR, $0; nextfile }
+END { print "NR", NR; print "getline:", (getline line < "-") }
+""", NF_B, operands="- stdin_used_up.in -", stdin="s1\ns2\ns3\n")
+add("nextfile", "ranges", r"""# A range left open by nextfile stays open into the next file (range
+# state is never reset between files).
+/1/, /2/ { print "range:", FILENAME, $0 }
+FNR == 1 { nextfile }
+""", NF_A, operands="ranges.in first_lines.in ranges.in")
+add("nextfile", "with_getline", r"""# getline before nextfile reads on in the current file; getline < FILENAME
+# is a separate stream, unaffected by nextfile.
+FNR == 1 {
+	getline
+	print "getline:", FILENAME, NR, FNR, $0
+	n = 0
+	while ((getline line < FILENAME) > 0)
+		n++
+	close(FILENAME)
+	print "lines in", FILENAME ":", n
+	nextfile
+}
+END { print NR }
+""", NF_A, operands="with_getline.in first_lines.in")
+
 # ---------------- one-liners (from "The AWK Programming Language")
 add("one_liners", "count_lines", "END { print NR }\n", EMP)
 add("one_liners", "third_line", "NR == 3\n", EMP)

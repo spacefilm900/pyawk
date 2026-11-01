@@ -1,0 +1,4 @@
+in_loops.in a1
+leaving in_loops.in at a2
+skip_rest.in a1
+leaving skip_rest.in at a2

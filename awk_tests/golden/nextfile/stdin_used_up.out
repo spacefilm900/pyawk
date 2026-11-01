@@ -1,0 +1,4 @@
+stdin 1 s1
+stdin_used_up.in 1 b1
+NR 2
+getline: 0
