@@ -1,4 +1,2 @@
 # gawk cases pyawk currently fails; written by scripts/run_golden.py --write-known-failures
-backgsub
 close_status
-posix2008sub

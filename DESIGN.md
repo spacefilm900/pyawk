@@ -288,8 +288,13 @@ compiled the same way and cached with `lru_cache`. Matching is leftmost; the
 Python engine is backtracking (leftmost-*first*), not POSIX leftmost-*longest*
 (see Known issues).
 
-`sub`/`gsub` follow awk rules: `&` is the match, `\&` a literal `&`, `\\`
-a backslash; in `gsub` an empty match is not allowed directly after a
+`sub`/`gsub` follow awk rules: `&` is the match and backslashes matter only
+in front of `&`. In a run of backslashes followed by `&`, each pair is one
+literal backslash and an odd one left over makes the `&` literal (`\&` → `&`,
+`\\&` → `\` + match, `\\\&` → `\&`); a run not followed by `&` is copied
+unchanged (`\\x` stays `\\x`). This is mawk's rule and the per-case majority:
+onetrue-awk differs for four or more backslashes before `&`, and gawk --posix
+halves runs not followed by `&` (gawk tests backgsub, posix2008sub). In `gsub` an empty match is not allowed directly after a
 previous match (`gsub(/x*/, "-", "abxd")` → `-a-b-d-`).
 
 ## Golden corpus and mawk

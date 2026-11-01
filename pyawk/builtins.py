@@ -224,20 +224,39 @@ def index(s: str, t: str) -> int:
 
 
 def expand_replacement(repl: str) -> list[str | None]:
-    """Pre-parse a sub/gsub replacement: ``None`` entries stand for ``&``.
+    r"""Pre-parse a sub/gsub replacement: ``None`` entries stand for ``&``.
 
-    In the replacement ``&`` means "the matched text", ``\\&`` a literal
-    ampersand and ``\\\\`` a literal backslash.  E.g. ``"<&>"`` becomes
-    ``["<", None, ">"]``.
+    In the replacement ``&`` means "the matched text".  Backslashes only
+    matter in front of ``&``: in a run of backslashes followed by ``&``,
+    each pair stands for one literal backslash, and an odd one left over
+    makes the ``&`` literal.  A run *not* followed by ``&`` is copied
+    unchanged.  So ``\&`` is a literal ``&``, ``\\&`` a backslash then
+    the match, but ``\\x`` stays two backslashes.  This is mawk's rule;
+    it is the majority answer in every case we tried (onetrue-awk differs
+    for four or more backslashes before ``&``, gawk --posix halves a run
+    not followed by ``&``).  E.g. ``"<&>"`` becomes ``["<", None, ">"]``.
     """
     parts: list[str | None] = []
     buf: list[str] = []
     i = 0
-    while i < len(repl):
+    n = len(repl)
+    while i < n:
         c = repl[i]
-        if c == "\\" and i + 1 < len(repl) and repl[i + 1] in "&\\":
-            buf.append(repl[i + 1])
-            i += 2
+        if c == "\\":
+            j = i
+            while j < n and repl[j] == "\\":
+                j += 1
+            run = j - i  # number of consecutive backslashes
+            if j < n and repl[j] == "&":
+                # ``divmod`` gives the quotient and remainder at once.
+                pairs, odd = divmod(run, 2)
+                buf.append("\\" * pairs)
+                if odd:
+                    buf.append("&")
+                    j += 1  # the & has been consumed as a literal
+            else:
+                buf.append("\\" * run)
+            i = j
         elif c == "&":
             if buf:
                 parts.append("".join(buf))

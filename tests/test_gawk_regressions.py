@@ -89,3 +89,31 @@ def test_getline_target_is_evaluated_even_at_end_of_file(tmp_path) -> None:
         ' getline e[++q] < "%s/missing"; print q, length(e) }' % (f, tmp_path)
     )
     assert awk(prog) == "2 2\n1 1\n"
+
+
+# ----------------------------------------------------------------- sub/gsub
+@pytest.mark.parametrize(
+    "repl, expected",
+    [
+        (r"\\x", r"\\x"),  # backslashes not before & are kept as they are
+        (r"\\", r"\\"),
+        (r"\&", "&"),  # odd run before &: literal &
+        (r"\\&", r"\o"),  # even run: half the backslashes, then the match
+        (r"\\\&", r"\&"),
+        (r"\\\\&", r"\\o"),
+        (r"\\\\\&", r"\\&"),
+        (r"\q", r"\q"),
+    ],
+)
+def test_backslashes_in_replacement(repl: str, expected: str) -> None:
+    # backgsub, posix2008sub.  The repl string comes in through a variable,
+    # so the awk lexer's own escape handling is not involved.
+    out = io.StringIO()
+    run('{ s = "o"; sub(/o/, $0, s); print s }', (), (), stdout=out,
+        stdin=io.BytesIO((repl + "\n").encode()))
+    assert out.getvalue() == expected + "\n"
+
+
+def test_gsub_doubling_backslashes() -> None:
+    # backgsub: gsub("\\\\", "\\\\") doubles every backslash.
+    assert awk(r'{ gsub("\\\\", "\\\\"); print }', "\\x\\y\n") == r"\\x\\y" + "\n"
