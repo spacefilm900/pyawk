@@ -77,10 +77,10 @@ UNINIT: StrNum = StrNum("", 0.0)
 
 # A complete numeric string (leading/trailing blanks allowed).
 _NUMERIC_RE = re.compile(
-    r"[ \t\n\r\f\v]*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?[ \t\n\r\f\v]*\Z"
+    r"[ \t\n\r\f\v]*[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?[ \t\n\r\f\v]*\Z"
 )
 # The longest numeric prefix used by string-to-number conversion.
-_PREFIX_RE = re.compile(r"[ \t\n\r\f\v]*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)")
+_PREFIX_RE = re.compile(r"[ \t\n\r\f\v]*([-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?)")
 
 # Integral values below this magnitude print as integers (mawk/one-true-awk
 # behave the same way; gawk prints every integral value with %d).
@@ -92,9 +92,24 @@ def is_numeric_string(s: str) -> bool:
     return _NUMERIC_RE.match(s) is not None
 
 
+# Characters a numeric string can start with.  A *frozenset* is a set that
+# cannot change; testing ``c in`` it is a single hash lookup.
+_NUM_START = frozenset("0123456789+-. \t\n\r\f\v")
+
+
 def make_strnum(s: str) -> Value:
-    """Classify input text: a ``StrNum`` if it looks numeric, else ``str``."""
-    if s and _NUMERIC_RE.match(s):
+    """Classify input text: a ``StrNum`` if it looks numeric, else ``str``.
+
+    This runs for every field a program looks at, so it has two shortcuts
+    before the full regular expression: text whose first character cannot
+    start a number (most words) is a string at once, and plain ASCII digits
+    (the most common numbers) are a number at once.
+    """
+    if not s or s[0] not in _NUM_START:
+        return s
+    if s.isascii() and s.isdigit():
+        return StrNum(s, float(s))
+    if _NUMERIC_RE.match(s):
         return StrNum(s, float(s.strip(" \t\n\r\f\v")))
     return s
 
@@ -124,14 +139,16 @@ def special_float_str(n: float) -> str:
 
 def num_to_str(n: float, fmt: str) -> str:
     """Number to string: integers as ``%d``, otherwise via *fmt* (CONVFMT/OFMT)."""
-    # ``n == n`` is False only for NaN ("not a number"), so this branch
-    # handles every ordinary finite number.
-    if n == n and n not in (math.inf, -math.inf):
-        # Whole numbers print without a decimal point (``3``, not ``3.0``).
-        if n == int(n) and abs(n) < _INT_PRINT_LIMIT:
-            return str(int(n))
-    else:
+    # int() fails only for infinities (OverflowError) and NaN (ValueError);
+    # ``try``/``except`` costs nothing when no error happens, so the common
+    # case (an ordinary number) pays for a single int() call.
+    try:
+        i = int(n)
+    except (OverflowError, ValueError):
         return special_float_str(n)
+    # Whole numbers print without a decimal point (``3``, not ``3.0``).
+    if i == n and -_INT_PRINT_LIMIT < n < _INT_PRINT_LIMIT:
+        return str(i)
     # ``fmt % n`` is Python's printf-style formatting, e.g. "%.6g" % 0.1.
     # A malformed user-supplied CONVFMT falls back to the POSIX default.
     try:

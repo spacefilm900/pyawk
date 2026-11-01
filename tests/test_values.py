@@ -27,6 +27,16 @@ def test_make_strnum() -> None:
     assert make_strnum("") == ""
 
 
+def test_only_ascii_digits_are_numeric() -> None:
+    # Python's regex \d and str.isdigit() also accept other scripts' digits
+    # ("\uff15" is a fullwidth 5); all three reference awks do not.
+    assert make_strnum("\uff15") == "\uff15"
+    assert make_strnum("1\uff15") == "1\uff15"
+    assert to_num("\uff15") == 0.0
+    assert to_num("1\uff15") == 1.0
+    assert make_strnum("007") == StrNum("007", 7.0)
+
+
 def test_to_num_prefix() -> None:
     assert to_num("3x") == 3.0
     assert to_num("  -2.5e1abc") == -25.0
