@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Differential regex testing: pyawk against mawk, onetrue-awk and gawk.
 
-usage: scripts/regex_fuzz.py [--check] [--show N] [--category CAT] [--jobs J]
+usage: scripts/regex_fuzz.py [--utf8] [--check] [--show N] [--category CAT] [--jobs J]
        scripts/regex_fuzz.py --explain ERE [--inputs a,b,...]
        scripts/regex_fuzz.py --verify-safety [N]
 
@@ -26,6 +26,14 @@ references run with LC_ALL=C: the C locale is the one POSIX bracket
 semantics are specified for here (under C.UTF-8, gawk's ``[=a=]`` also
 matches "A").
 
+``--utf8`` works on the UTF-8 corpus instead (regex_corpus.utf8_corpus,
+recorded in awk_tests/regex_differential_utf8.json).  It runs under
+LC_ALL=C.UTF-8 with only onetrue-awk and gawk --posix: mawk works on
+bytes, so it has no say.  Where the two disagree, gawk's answer is
+recorded (the project follows POSIX or gawk on UTF-8 questions; see
+DESIGN.md, "Locale"), and the line lists onetrue under ``outvoted``.
+``regex_corpus.UTF8_OVERRIDES`` records exceptions.
+
 ``--show N`` prints the first N mismatching lines with the three
 references' answers next to pyawk's.
 """
@@ -47,6 +55,7 @@ sys.path.insert(0, str(ROOT / "awk_tests"))
 import regex_corpus as rc  # noqa: E402
 
 RESULTS = ROOT / "awk_tests" / "regex_differential.json"
+UTF8_RESULTS = ROOT / "awk_tests" / "regex_differential_utf8.json"
 
 REFERENCES = {
     "mawk": ["/usr/bin/mawk"],
@@ -54,6 +63,10 @@ REFERENCES = {
     "gawk": ["/workspace/refs/local/bin/gawk", "--posix"],
 }
 
+
+# The references for the UTF-8 corpus, and the one that settles a split.
+UTF8_REFERENCES = ("onetrue", "gawk")
+UTF8_TIEBREAK = "gawk"
 
 TIMEOUT = "TIMEOUT"
 
@@ -63,7 +76,7 @@ def run_reference(cmd: list[str], entry: rc.Entry) -> list[str]:
     try:
         proc = subprocess.run(
             [*cmd, rc.probe_program(entry.pattern)],
-            env={**os.environ, "LC_ALL": "C"},
+            env={**os.environ, "LC_ALL": entry.locale},
             input=rc.stdin_text(entry).encode("utf-8", "surrogateescape"),
             capture_output=True,
             timeout=10,
@@ -83,9 +96,13 @@ def split_lines(out: str, entry: rc.Entry) -> list[str]:
     return lines + [rc.ERROR] * (len(entry.inputs) - len(lines))
 
 
-def regenerate(entries: list[rc.Entry], jobs: int) -> dict:
+def regenerate(entries: list[rc.Entry], jobs: int, utf8: bool = False) -> dict:
+    # Which references vote, and how a split is settled (see the docstring).
+    voters = UTF8_REFERENCES if utf8 else tuple(REFERENCES)
+    overrides = rc.UTF8_OVERRIDES if utf8 else rc.OVERRIDES
+
     def answers(entry: rc.Entry) -> dict[str, list[str]]:
-        return {name: run_reference(cmd, entry) for name, cmd in REFERENCES.items()}
+        return {name: run_reference(REFERENCES[name], entry) for name in voters}
 
     with ThreadPoolExecutor(jobs) as pool:
         all_answers = list(pool.map(answers, entries))
@@ -93,10 +110,14 @@ def regenerate(entries: list[rc.Entry], jobs: int) -> dict:
     for entry, ans in zip(entries, all_answers):
         expected: list[str | None] = []
         splits: dict[str, dict[str, str]] = {}
-        override = rc.OVERRIDES.get(entry.pattern)
+        override = overrides.get(entry.pattern)
         for i, inp in enumerate(entry.inputs):
             if override:
                 expected.append(None if override[0] == "none" else ans[override[0]][i])
+                continue
+            if utf8:
+                # Two voters: their common answer, or else gawk's.
+                expected.append(ans[UTF8_TIEBREAK][i])
                 continue
             votes = Counter(ans[name][i] for name in REFERENCES)
             value, n = votes.most_common(1)[0]
@@ -112,13 +133,17 @@ def regenerate(entries: list[rc.Entry], jobs: int) -> dict:
         if override:
             rec["override"] = f"{override[0]}: {override[1]}"
         # Which reference was outvoted where (handy when reading the file).
-        outvoted = sorted({name for name in REFERENCES for i, e in enumerate(expected)
+        outvoted = sorted({name for name in voters for i, e in enumerate(expected)
                            if e is not None and ans[name][i] != e})
         if outvoted:
             rec["outvoted"] = outvoted
         records.append(rec)
-    return {"about": "majority answers of mawk, onetrue-awk and gawk --posix; regenerate with scripts/regex_fuzz.py",
-            "records": records}
+    if utf8:
+        about = ("UTF-8 corpus under LC_ALL=C.UTF-8: onetrue-awk and gawk --posix, gawk's answer where they differ; "
+                 "regenerate with scripts/regex_fuzz.py --utf8")
+    else:
+        about = "majority answers of mawk, onetrue-awk and gawk --posix; regenerate with scripts/regex_fuzz.py"
+    return {"about": about, "records": records}
 
 
 def compare(data: dict, show: int, category: str | None) -> int:
@@ -159,7 +184,8 @@ def compare(data: dict, show: int, category: str | None) -> int:
 
 def explain(entry: rc.Entry) -> None:
     """Print each reference's and pyawk's answer for one pattern, per input."""
-    answers = {name: run_reference(cmd, entry) for name, cmd in REFERENCES.items()}
+    voters = UTF8_REFERENCES if entry.utf8 else tuple(REFERENCES)
+    answers = {name: run_reference(REFERENCES[name], entry) for name in voters}
     answers["pyawk"] = split_lines(rc.run_pyawk(entry), entry)
     print("columns: RSTART RLENGTH ~ gsub-count gsub-result split-count:pieces")
     for i, inp in enumerate(entry.inputs):
@@ -222,6 +248,7 @@ def verify_safety(count: int) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true", help="compare pyawk with the recorded file only")
+    ap.add_argument("--utf8", action="store_true", help="the UTF-8 corpus, in a UTF-8 locale (no mawk)")
     ap.add_argument("--show", type=int, default=0, metavar="N", help="print the first N mismatches")
     ap.add_argument("--category", help="only this category")
     ap.add_argument("--jobs", type=int, default=8)
@@ -234,15 +261,18 @@ def main() -> int:
         return 1 if verify_safety(args.verify_safety) else 0
     if args.explain is not None:
         inputs = tuple(args.inputs.split(",")) if args.inputs is not None else rc.ABC_INPUTS
-        explain(rc.Entry("explain", args.explain, inputs))
+        explain(rc.Entry("utf8-explain" if args.utf8 else "explain", args.explain, inputs))
         return 0
+    results = UTF8_RESULTS if args.utf8 else RESULTS
     if args.check:
-        data = json.loads(RESULTS.read_text())
+        data = json.loads(results.read_text())
     else:
-        data = regenerate(rc.corpus(), args.jobs)
-        RESULTS.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n")
+        data = regenerate(rc.utf8_corpus() if args.utf8 else rc.corpus(), args.jobs, args.utf8)
+        # ensure_ascii=True writes non-ASCII as \uXXXX escapes, which keeps the
+        # invalid-byte stand-ins (lone surrogates) storable in a UTF-8 file.
+        results.write_text(json.dumps(data, indent=1, ensure_ascii=args.utf8) + "\n")
         n_split = sum(1 for r in data["records"] for e in r["expected"] if e is None)
-        print(f"wrote {RESULTS.relative_to(ROOT)}: {len(data['records'])} patterns, {n_split} split lines")
+        print(f"wrote {results.relative_to(ROOT)}: {len(data['records'])} patterns, {n_split} split lines")
     # The exit status tells scripts whether pyawk matched the record:
     # 0 if every line agreed, 1 if any did not.
     return 1 if compare(data, args.show, args.category) else 0

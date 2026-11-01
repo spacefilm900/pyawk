@@ -25,6 +25,14 @@ The corpus has two parts:
   with inputs chosen to exercise it;
 * ``random_patterns``: small EREs built by a seeded random generator over
   the alphabet {a, b, c}, so the same seed always gives the same corpus.
+
+A separate UTF-8 corpus (``utf8_corpus``, categories named ``utf8-...``)
+is run in a UTF-8 locale, against onetrue-awk and gawk --posix only (mawk
+works on bytes); scripts/regex_fuzz.py --utf8 records it in
+regex_differential_utf8.json.  Its inputs hold accented letters, other
+scripts, symbols, an invalid byte (written as the code point U+DCE9 -- see
+pyawk/charset.py) and lines longer than 2048 characters, which pyawk
+searches with its automata instead of Python's re.
 """
 
 from __future__ import annotations
@@ -48,6 +56,15 @@ class Entry:
     category: str
     pattern: str
     inputs: tuple[str, ...] = ABC_INPUTS
+
+    @property
+    def utf8(self) -> bool:
+        """Is this a UTF-8 corpus entry (run in a UTF-8 locale)?"""
+        return self.category.startswith("utf8")
+
+    @property
+    def locale(self) -> str:
+        return "C.UTF-8" if self.utf8 else "C"
 
     @property
     def key(self) -> str:
@@ -132,6 +149,79 @@ CURATED: list[Entry] = [
         "(a|)b", "(|a)b", "a||b", "a|", "|a", "(|)", "()", "()a", "a()", "(a|b|)", "(|a|b)+", "a(|b)c",
     ], ABC_INPUTS + ("ac", "abc")),
 ]
+
+
+# --- The UTF-8 corpus ---------------------------------------------------
+# "\udce9" is the byte 0xE9 on its own: not valid UTF-8 (it would start a
+# two-byte character).  pyawk keeps such a byte as the code point U+DCE9;
+# the encoding "surrogateescape" turns it back into the byte 0xE9 for the
+# reference awks (see stdin_text's callers).
+_UTF8_INPUTS = (
+    "", "e", "é", "É", "ée", "aéb", "éé", "€", "€5", "日本語", "ñandú", "Straße", "ǅ", "\udce9",
+    "a\udcc3b", "\udce9é", "x y", "«a»", "a·b", "١٢٣", "Ａ１", "a\u00a0b", "a\u3000b", "ΑΒΓαβγ",
+    "e\u0301", "😀x", "\t", "aé€日😀",
+)
+# Long lines: over regex.LONG_TEXT (2048) characters, though some are far
+# more bytes, so pyawk must count characters to pick the automata.
+_UTF8_LONG_INPUTS = (
+    "é" * 1500, "é" * 2100, "é" * 2100 + "x", "日本" * 1100, "日本" * 1100 + "x", "aé" * 1100 + "€",
+    "\udce9" * 2100 + "x", "😀" * 2049, "x" + "é" * 2100,
+)
+UTF8_CURATED: list[Entry] = [
+    *_c("utf8-literal", [
+        "é", "é+", "(é|e)+", "ée*", "日本", "(日|本)+語", "€|e", "^é", "é$", "^é$", "aéb", "😀", "[😀]x",
+    ], _UTF8_INPUTS),
+    *_c("utf8-dot", [
+        ".", "^.$", "^..$", "a.b", ".*", ".+é", "(.)(.)", "^.{2}$", ".{3}", "^.*$", "x.", ".x",
+    ], _UTF8_INPUTS),
+    *_c("utf8-brackets", [
+        "[é]", "[^é]", "[éè]+", "[à-ÿ]", "[^a-z]", "[a-zé]+", "[€]", "[^€]+", "[日本]+", "[α-ω]+",
+        "[^ -~]", "[^ -~]+", "[^a]", "[^a]+", "[Α-Ωα-ω]+", "[[=é=]]", "[[.é.]]", "[é-]", "[^ée]",
+    ], _UTF8_INPUTS),
+    *_c("utf8-classes", [
+        "[[:alpha:]]", "[[:alpha:]]+", "[[:upper:]]", "[[:lower:]]+", "[[:upper:]][[:lower:]]+",
+        "[[:digit:]]", "[[:alnum:]]+", "[[:space:]]", "[[:blank:]]", "[[:punct:]]+", "[[:xdigit:]]",
+        "[[:cntrl:]]", "[[:print:]]+", "[[:graph:]]+", "[^[:alpha:]]", "[^[:space:]]+", "[[:alnum:]_]+",
+        "[^[:print:]]",
+    ], _UTF8_INPUTS),
+    *_c("utf8-escapes", [
+        "\\303\\251", "\\303\\251+", "[\\303\\251]", "\\342\\202\\254", "[^\\303\\251]",
+        "\\xc3\\xa9", "a\\303\\251?b", "\\360\\237\\230\\200",
+    ], _UTF8_INPUTS),
+    *_c("utf8-intervals", [
+        "é{2}", "[é€]{2,}", ".{2}", "(é|日){1,2}", "[^a]{3}", "[[:alpha:]]{2,3}",
+    ], _UTF8_INPUTS),
+    *_c("utf8-long", [
+        "é+x", "(é|e)*x", "[^x]+x", ".*x", "[[:alpha:]]+x", "(日本)+x", "x$", "€$", "(aé)+€", ".x",
+        "(é|éé)*x", "[^a]*x",
+    ], _UTF8_LONG_INPUTS),
+]
+
+
+def utf8_corpus() -> list[Entry]:
+    """The UTF-8 corpus (see the module docstring)."""
+    return list(UTF8_CURATED)
+
+
+# UTF-8 patterns whose recorded answer is not gawk's, with the reason.  The
+# UTF-8 record follows gawk where onetrue-awk and gawk disagree (DESIGN.md,
+# "Locale"); these are where pyawk deliberately does not.  "none" means:
+# record nothing, test nothing.
+#
+# * ``[[=é=]]``: gawk matches every character of é's equivalence class
+#   (e, E, É, ...) and onetrue-awk matches nothing (not even é); pyawk's
+#   rule is code-point collation, where a class holds just the character
+#   itself, as in the C locale.  Tested in tests/test_locale.py instead.
+# * ``\xc3\xa9``: gawk --posix has no hex escapes (it reads ``\x`` as
+#   "x"); plain gawk, like pyawk, reads it as the character é.
+# * ``.*``: gawk --posix never returns from gsub(/.*/, ...) on a line
+#   with an invalid byte (a gawk bug), so the whole entry would be
+#   TIMEOUT; ``^.*$`` and the other ``.`` entries cover the same ground.
+UTF8_OVERRIDES: dict[str, tuple[str, str]] = {
+    "[[=é=]]": ("none", "equivalence class: gawk uses the locale's classes, pyawk code points"),
+    "\\xc3\\xa9": ("none", "gawk --posix has no \\x escapes; plain gawk agrees with pyawk"),
+    ".*": ("none", "gawk --posix hangs in gsub(/.*/) on a line with an invalid byte"),
+}
 
 
 def random_patterns(count: int = 300, seed: int = 1) -> list[Entry]:
@@ -272,6 +362,7 @@ def run_pyawk(entry: Entry) -> str:
             probe_program(entry.pattern),
             stdout=out,
             stdin=io.BytesIO(stdin_text(entry).encode("utf-8", "surrogateescape")),
+            utf8=entry.utf8,  # the locale mode, whatever this process's locale is
         )
     except AwkError:
         return ERROR
