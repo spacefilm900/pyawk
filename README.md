@@ -32,6 +32,7 @@ assignments processed when reached, as in POSIX. Exit status is the value of
 | Built-in functions | `length substr index split sub gsub match sprintf tolower toupper sin cos atan2 exp log sqrt int rand srand system close fflush` |
 | getline | `getline`, `getline var`, `getline < file`, `getline var < file`, `cmd \| getline [var]` |
 | Output | `print`/`printf` with `> file`, `>> file`, `\| cmd`; `close()` (a command's exit status), `fflush([name])`, `/dev/stdout`, `/dev/stderr`; a closed pipe ends pyawk by SIGPIPE, as in other awks |
+| Locale | characters in a UTF-8 locale (`LC_ALL`/`LC_CTYPE`/`LANG` containing `UTF-8` or `utf8`): `length`, `substr`, `index`, `match`, `split`, printf `%c` and widths, `toupper`/`tolower`, regex `.`/brackets/classes, FS and RS; bytes in any other locale. Input bytes always round-trip; each invalid UTF-8 byte counts as one character. Details and decisions: DESIGN.md ("Locales and UTF-8") |
 | Values | dual string/number values with POSIX *strnum* semantics for fields, `getline` input, `split()` elements, `ARGV`, `-v` and operand assignments |
 
 Deferred: nothing at present (`nextfile` was the last deferred feature).
@@ -104,11 +105,12 @@ As of 2026-11-01 (`.venv/bin/python -m pytest -q`, `scripts/run_golden.py`):
 
 | suite | pass | fail | skip |
 |---|---|---|---|
-| pytest (all) | 1677 | 0 | 122 |
-| own golden corpus (incl. regex_posix 8) | 137 | 0 | 0 |
+| pytest (all) | 1900 | 0 | 122 |
+| own golden corpus (incl. regex_posix 8, utf8 17) | 154 | 0 | 0 |
 | imported onetrue-awk | 215 | 0 | 9 |
 | imported gawk | 192 | 0 | 112 |
 | regex differential (570 patterns, 13 503 lines) | 13 503 | 0 | 108 split/untested |
+| UTF-8 regex differential (88 patterns, 2 152 lines) | 2 152 | 0 | 84 untested |
 
 All `KNOWN_FAILURES` lists are empty.
 
@@ -127,13 +129,18 @@ syntax errors in pyawk too, even in code that never runs.
 
 Regexes follow POSIX ERE with leftmost-longest matching for `match()`,
 `sub`/`gsub`, `split`, regex FS and regex RS. Bracket expressions,
-including `[= =]` and `[. .]`, work in the C locale. The
-`awk_tests/regex_differential.json` record holds the majority answer of
-mawk, onetrue-awk and gawk --posix, run with LC_ALL=C.
+including `[= =]` and `[. .]` (which match only the character itself),
+work in the C locale and in UTF-8 locales, where they see characters and
+the classes cover Unicode. The `awk_tests/regex_differential.json` record
+holds the majority answer of mawk, onetrue-awk and gawk --posix, run with
+LC_ALL=C; `awk_tests/regex_differential_utf8.json` holds onetrue-awk's and
+gawk --posix's answers under LC_ALL=C.UTF-8 (gawk breaks ties; mawk is
+byte-only), for patterns and inputs with multibyte and invalid UTF-8.
 
 ```sh
 .venv/bin/python scripts/regex_fuzz.py            # re-run the references, rewrite the record, compare pyawk
 .venv/bin/python scripts/regex_fuzz.py --check    # compare pyawk with the stored record only
+.venv/bin/python scripts/regex_fuzz.py --utf8 [--check]  # the same for the UTF-8 corpus
 .venv/bin/python scripts/regex_fuzz.py --verify-safety 1000  # check the fast-path rule exhaustively
 ```
 
@@ -147,6 +154,7 @@ Rules, overrides and the decisions on constructs POSIX leaves undefined are in D
 .venv/bin/python scripts/bench.py --compare baseline  # add a speedup column
 .venv/bin/python scripts/bench.py --only funcs --awks pyawk,mawk
 .venv/bin/python scripts/bench.py --path onetrue=/path/to/a.out  # an awk not on PATH
+.venv/bin/python scripts/bench.py --locale C.UTF-8    # time UTF-8 mode (default LC_ALL=C)
 ```
 
 pyawk compiles the program to Python closures before running it; it is

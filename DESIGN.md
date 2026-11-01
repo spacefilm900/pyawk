@@ -240,8 +240,10 @@ misuse (`x = 1; x[1] = 2`, a local array assigned as a scalar).
   rebuilds `$0` with `OFS`; assigning `NF` truncates/extends and rebuilds.
   In paragraph mode (`RS=""`) newline is always a field separator too, when
   splitting records only: `split()` uses FS alone (all three references).
-* Input: `RecordReader` reads bytes with `read1` and decodes UTF-8
-  incrementally (`surrogateescape`, so arbitrary bytes round-trip), and
+* Input: `RecordReader` reads bytes with `read1` and decodes them
+  incrementally with the locale's codec (Latin-1 in the C locale, UTF-8
+  with `surrogateescape` in a UTF-8 locale; either way arbitrary bytes
+  round-trip, see "Locales and UTF-8"), and
   supports a single-char RS, paragraph mode and (bonus) regex RS. Plain
   `getline` shares the same reader as the main loop.
 * Range patterns: the open/closed state is run-time data, so it lives in
@@ -520,8 +522,8 @@ references run with LC_ALL=C):
   * Backslash escapes work inside brackets (`[\]]`, `[\\]`, `[\t]`).
   * Classes: the twelve POSIX `[:class:]` names. Anything else, including
     gawk's `[:word:]`, is an error, as is a class used as a range end.
-  * In the C locale `[=a=]` and `[.a.]` mean `a`, and `[.-.]` can be a
-    range end. A multi-character name (`[.ab.]`, `[.space.]`) is an error.
+  * `[=a=]` and `[.a.]` mean `a`, and `[.-.]` can be a range end (in a
+    UTF-8 locale too: see "Locales and UTF-8"). A multi-character name (`[.ab.]`, `[.space.]`) is an error.
   * An unterminated bracket and a reversed range (`[z-a]`) are errors.
 
 **Overrides.**
@@ -586,7 +588,10 @@ Each pattern runs on a set of inputs through one probe program that prints
 majority in `awk_tests/regex_differential.json`, and compares pyawk with
 it. `tests/test_regex_differential.py` checks that record in pytest. The
 golden category `regex_posix` (8 cases) covers the same rules with
-ordinary awk programs.
+ordinary awk programs. `scripts/regex_fuzz.py --utf8` does the same for
+the UTF-8 corpus (88 patterns over 28 inputs with multibyte and invalid
+UTF-8, in `awk_tests/regex_differential_utf8.json`); see "Locales and
+UTF-8".
 
 | | patterns with a mismatch | mismatching lines |
 |---|---|---|
@@ -792,12 +797,13 @@ and new code: regex 0.565 / 0.565–0.570 s, gsub 0.829–0.841 /
 
 ## Test status
 
-pytest: 1677 passed, 122 skipped. Golden summaries: own corpus 137/137
-(nine v1.0 categories with 99 cases, plus environ 5, io 18, nextfile 7 and
-regex_posix 8), onetrue-awk 215 pass / 9 skip, gawk 192 pass / 112 skip,
-no failures and empty `KNOWN_FAILURES` lists (2026-11-01, `enhancements`
-branch). The regex differential record (570 patterns, 13 503 input lines)
-has no mismatches. v1.0 had 744 / 99 / 215 / 190. The extra gawk cases
+pytest: 1900 passed, 122 skipped. Golden summaries: own corpus 154/154
+(nine v1.0 categories with 99 cases, plus environ 5, io 18, nextfile 7,
+regex_posix 8 and utf8 17), onetrue-awk 215 pass / 9 skip, gawk 192 pass /
+112 skip, no failures and empty `KNOWN_FAILURES` lists (2026-11-01,
+`enhancements` branch). The regex differential record (570 patterns,
+13 503 input lines) and the UTF-8 one (88 patterns, 2 152 lines) have no
+mismatches. v1.0 had 744 / 99 / 215 / 190. The extra gawk cases
 are close_status (see `close()` above) and regrange (see "Regular
 expressions"). Most of the pytest growth is the regex differential test,
 which has one case per pattern and category, plus 86 engine tests and 57
@@ -949,7 +955,7 @@ differential runs:
 | Behaviour | POSIX / pyawk | mawk |
 |---|---|---|
 | `substr(s, -1, 3)`, negative start with a length | start clamped to 1, length kept: `"hel"` (onetrue, gawk) | `"hell"` |
-| `length("héllo")` | characters: 5 | bytes: 6 |
+| `length("héllo")` in a UTF-8 locale | characters: 5 | bytes: 6 (mawk has no multibyte support; the `utf8` golden category is generated with `gawk --posix` instead) |
 | `"a\/b"` in a string | `a/b` (gawk, BWK) | keeps backslash `a\/b` |
 | `"\q"`, `"\&"`, `"a\.b"`: undefined escapes | backslash dropped (gawk, BWK) | backslash kept (see Lexer) |
 | `RS=""` with `FS=":"` | newline is also a separator | newline not a separator |
@@ -999,11 +1005,111 @@ For huge, infinite or NaN arguments onetrue-awk and mawk overflow a C
 gives `""`. Tests: `tests/test_runtime.py`, golden `builtins/substr_clamp`
 (an OVERRIDES case) and gawk `substr`.
 
+## Locales and UTF-8
+
+pyawk picks one of two modes at start-up from the environment, as POSIX
+describes: the first of `LC_ALL`, `LC_CTYPE` and `LANG` that is set and
+not empty decides (`pyawk/charset.py`).
+
+* **UTF-8 mode**: the locale name contains `UTF-8` or `utf8` (any letter
+  case), e.g. `LANG=en_GB.UTF-8` or `LC_ALL=C.UTF-8`. Strings are made of
+  characters: `length`, `substr`, `index`, `match` (`RSTART`/`RLENGTH`),
+  `split` (including `split(s, a, "")`), printf `%c` and the widths and
+  precisions of `%s`/`%c`, `toupper`/`tolower`, the regex `.`, bracket
+  expressions and classes, FS and RS all count and compare characters.
+* **C mode**: anything else, including no locale at all. Every byte is
+  one character; classes are ASCII; `toupper`/`tolower` change only
+  `a-z`/`A-Z`. This is byte-exact, as before.
+
+Python itself changes `LC_CTYPE` to `C.UTF-8` at start-up when the locale
+is plain C (PEP 538 "locale coercion"). pyawk detects that and undoes it,
+both for its own mode and for the environment of `system()` and pipes, so
+`LANG=C pyawk ...` really is byte mode.
+
+**Bytes in, bytes out.** Input is decoded and output encoded with the
+mode's codec: Latin-1 in C mode (byte N is character N, so everything
+round-trips), UTF-8 with Python's `surrogateescape` in UTF-8 mode. File
+names, command lines, `-v` values, `ENVIRON` and program text use the same
+codec, so a name such as `été.txt` reaches the file system unchanged.
+
+**Invalid UTF-8.** A byte that is not part of a valid UTF-8 sequence is
+kept as an "escaped byte" (one of U+DC80..U+DCFF inside pyawk) and is
+written back as the same byte. It never crashes pyawk, and **each invalid
+byte counts as one character** (`length("a\377b")` is 3, as in gawk).
+Because Python's decoder handles them, truncated sequences, overlong forms
+and encoded surrogates are invalid bytes too.
+
+**Tests.** `tests/test_locale.py` (end-to-end programs run in both
+locales, the tables, detection, the regex set forms); golden category
+`utf8` (17 cases, run with `LC_ALL=C.UTF-8`; `awk_tests/harness.py`
+`LOCALES`), whose `.out` files come from `gawk --posix` because mawk has no
+multibyte support (`regen_golden.py` votes them against onetrue-awk); the
+UTF-8 regex differential corpus (`scripts/regex_fuzz.py --utf8`, 88
+patterns: literals, `.`, brackets, classes, escapes, intervals and inputs
+over 2048 characters, which take the automaton route) recorded from
+onetrue-awk and `gawk --posix` under `C.UTF-8`, with gawk breaking ties.
+The rest of pytest runs in the C locale (an autouse fixture in
+`tests/conftest.py`), so results do not depend on the machine's locale.
+
+**Decisions.** POSIX says characters, but leaves invalid input, `%c` of
+large numbers and multibyte collation to the implementation. mawk is not
+a reference here (it is byte-only), so where onetrue-awk and gawk
+disagree pyawk follows POSIX where it speaks, otherwise gawk, except
+where noted. References run with `LC_ALL=C.UTF-8`.
+
+| Question | onetrue-awk | gawk --posix | pyawk |
+|---|---|---|---|
+| invalid byte in `length`, `index`, `split`, `match` | one character each, but a lone byte such as `\351` is read as its Latin-1 character (so `/é/` matches it) | one character each | one character each, matching only its own escape `/\351/` (gawk) |
+| invalid byte through `substr`, `toupper`, `tolower` | `substr` keeps the byte; `toupper` stops with "illegal byte sequence" | replaced by U+FFFD (`substr("a\377b", 2, 1)` is U+FFFD) | **kept as the same byte**: output round-trips. *Choice to confirm* (OVERRIDES `utf8/invalid_bytes_substr`) |
+| `.`, `[^a]` on an invalid byte | match | do not match | do not match (gawk); `/\377/` does match it |
+| `"\303\251"`, `/\303\251/` (escapes spelling UTF-8 bytes) | one character `é` | one character `é` | one character `é` (both agree). `\x` escapes in a regex combine the same way; gawk --posix has no `\x` (reads `x`), plain gawk agrees with pyawk |
+| `"\303" "\251"` (concatenation) | `é` | `é` | `é`: concatenation joins escaped bytes that complete a character |
+| `printf "%c", 233` | `é` | `é` | `é` (code point, UTF-8 encoded) |
+| `printf "%c", 1114112` (above U+10FFFF) | U+FFFD | `\364\220\200\200` (the 4-byte pattern extended) | gawk's bytes. *Choice to confirm* |
+| `printf "%3c", 233` | 2 spaces + `é` | 1 space + `é` (pads by bytes) | **2 spaces** (onetrue: widths count characters, as POSIX says and as gawk does for strings; OVERRIDES `utf8/printf_width`) |
+| `%5s`, `%.1s` of `"é..."` | characters | characters | characters |
+| `[[=é=]]` | matches nothing, not even `é` | glibc equivalence class: `e`, `E`, `É`, ... | **`é` only** (code point, same rule as the C locale). *Choice to confirm*; overridden in the UTF-8 differential corpus |
+| `[[:alpha:]]`, `[[:upper:]]`, `[[:punct:]]` ... | ASCII only | Unicode (glibc tables) | gawk's tables (`pyawk/unicode_tables.py`, generated by `scripts/gen_unicode_tables.py`); `digit`/`xdigit` stay ASCII as POSIX requires |
+| `toupper("straße é ж")` | `STRAßE É Ж` | `STRAßE É Ж` | the same (one-character mappings only, so `ß` stays; table from gawk) |
+| default FS and U+3000 / U+00A0 | not separators | not separators | not separators: space, tab, newline only |
+| multi-character `RS = "é\|x"` | regex | first character only | regex (onetrue, mawk, and pyawk's C mode; OVERRIDES `utf8/record_separator`) |
+| `"é" < "z"` | 0 | 0 | 0: comparison by code point (no locale collation) |
+| `é = 1`, `-v é=1` (non-ASCII names) | syntax error / invalid -v | syntax error / fatal | errors (all three agree; mawk too) |
+| `printf "%٣d"`, `/a{٣}/` (Arabic-Indic digit) | not a width / not an interval | not a width / not an interval | ASCII digits only (Python's `isdigit()` would accept `٣`) |
+
+Overridden patterns in the UTF-8 differential corpus (`regex_corpus.UTF8_OVERRIDES`):
+`[[=é=]]` (above), `\xc3\xa9` (gawk --posix reads `\x` as `x`), and `.*`
+(gawk --posix never returns from `gsub(/.*/, ...)` on a line with an
+invalid byte; `^.*$` and the other `.` patterns cover the same ground).
+gawk breaks the ties: onetrue-awk disagrees with it (and with pyawk) on
+at least one input line of 66 of the 88 patterns (325 lines), mostly
+because of its ASCII-only classes and its reading of a lone invalid byte
+as a Latin-1 character.
+
+**Regex engine.** The engine works on Python strings, so in UTF-8 mode it
+simply sees characters; the backtracking-safety rule and the routing of
+texts longer than 2048 characters (`LONG_TEXT`, now 2048 *characters*) to
+the automaton are unchanged. Sets keep sorted ranges and test membership
+by bisection, so a Unicode class with hundreds of ranges costs one
+`bisect` per character in the automaton. In the Python patterns, a set
+with many ranges above U+FFFF is written as
+`(?:[below U+10000]|(?=[\U00010000-\U0010ffff])[the rest])`, because
+Python checks the ranges above U+FFFF one by one and every character not
+in the set would otherwise walk the whole list. The `_compile` cache is
+cleared when the mode changes.
+
+**Performance.** On the benchmark (ASCII input) UTF-8 mode is within
+about 2% of C mode and of the code before the change (best of 7,
+alternating runs: fields +1.4%, sum +1.8%, funcs +1.3%, others within
+noise; C mode no slower). On 200 000 lines of mixed French, Greek and
+Chinese words, `gsub(/[[:alpha:]]é/, "&")` takes 0.87 s in UTF-8 mode
+against 0.45 s in C mode (2.1 s before the set rewrite); the rest of the
+gap is Python's `re` scanning a large set. `scripts/bench.py --locale
+C.UTF-8` times UTF-8 mode.
+
 ## Known issues / limitations
 
-* Regex: only the C locale. Characters are compared by code point; there
-  is no multibyte or national-locale collation, so `[=e=]` is just `e`.
-  The automaton's DFA cache is limited to 10 000 states per pattern; a
+* Regex: the automaton's DFA cache is limited to 10 000 states per pattern; a
   larger pattern still works, linearly, but rebuilds states. Patterns
   that are not backtrack-safe run in a Python per-character loop, so they
   are slower than Python's `re` on easy inputs (`gsub(/(e|er)+[a-z]/, ...)`
