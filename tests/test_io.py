@@ -7,6 +7,7 @@ error reports, exit codes, stderr, and files written by the program.
 
 import io
 import signal
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -191,6 +192,71 @@ def test_named_fflush_lets_broken_pipe_through() -> None:
     # A reader that has gone away must reach the CLI's SIGPIPE handling.
     with pytest.raises(BrokenPipeError):
         _io_table_with(_FailingStream(BrokenPipeError())).flush("out")
+
+
+# fflush("/dev/stdout") and fflush("/dev/stderr") name the standard streams
+# rather than an entry in the table, but a failed flush must still give -1
+# (CodeRabbit, PR #1).  mawk and onetrue-awk return -1 here.
+def test_fflush_dev_stdout_returns_minus_one_on_os_error() -> None:
+    from pyawk import runtime
+
+    table = runtime.IOManager(_FailingStream(OSError(28, "No space")), io.BytesIO())
+    assert table.flush("/dev/stdout") == -1
+
+
+def test_fflush_dev_stdout_lets_broken_pipe_through() -> None:
+    from pyawk import runtime
+
+    table = runtime.IOManager(_FailingStream(BrokenPipeError()), io.BytesIO())
+    with pytest.raises(BrokenPipeError):
+        table.flush("/dev/stdout")
+
+
+def test_fflush_dev_stderr_returns_minus_one_on_os_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pyawk import runtime
+
+    monkeypatch.setattr(sys, "stderr", _FailingStream(OSError(28, "No space")))
+    assert runtime.IOManager(io.StringIO(), io.BytesIO()).flush("/dev/stderr") == -1
+
+
+# fflush() with no name flushes everything; it must report -1 if any of the
+# flushes failed (CodeRabbit, PR #1), and still pass a broken pipe on.
+def test_flush_all_reports_a_failed_output() -> None:
+    table = _io_table_with(_FailingStream(OSError(28, "No space")))
+    assert table.flush_all() == -1
+
+
+def test_flush_all_reports_failed_stdout() -> None:
+    from pyawk import runtime
+
+    table = runtime.IOManager(_FailingStream(OSError(28, "No space")), io.BytesIO())
+    assert table.flush_all() == -1
+
+
+def test_flush_all_returns_zero_on_success() -> None:
+    assert _io_table_with(io.StringIO()).flush_all() == 0
+
+
+def test_flush_all_lets_broken_pipe_through() -> None:
+    with pytest.raises(BrokenPipeError):
+        _io_table_with(_FailingStream(BrokenPipeError())).flush_all()
+
+
+@pytest.mark.skipif(not os.path.exists("/dev/full"), reason="needs /dev/full")
+def test_fflush_on_full_disk_gives_minus_one_then_a_clean_write_error() -> None:
+    # Standard output is /dev/full, so every write fails with "No space left
+    # on device".  fflush() and fflush("/dev/stdout") report -1 (mawk and
+    # onetrue-awk); the final flush at exit is a write error with status 2
+    # (onetrue-awk and gawk), never a Python traceback.
+    prog = 'BEGIN { printf "x"; r = fflush("/dev/stdout"); printf "y"; s = fflush(); print r, s > "/dev/stderr" }'
+    with open("/dev/full", "w") as full:
+        res = subprocess.run(
+            [sys.executable, "-m", "pyawk", prog], stdout=full, stderr=subprocess.PIPE, text=True, cwd=REPO
+        )
+    assert res.stderr.splitlines()[0] == "-1 -1"
+    assert "Traceback" not in res.stderr
+    assert "write error" in res.stderr
+    assert res.returncode == 2
 
 
 # ---------------------------------------------------------- close() of the

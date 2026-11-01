@@ -128,6 +128,18 @@ def _configure_stdio() -> None:
             stream.reconfigure(errors="surrogateescape", newline="")  # type: ignore[union-attr]
 
 
+def _flush_stdout_or_give_up() -> None:
+    """Flush standard output before an error message; if even that fails
+    (the disk is full), point it at /dev/null so the text still waiting
+    there is thrown away instead of failing again when Python exits."""
+    try:
+        sys.stdout.flush()
+    except OSError:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        os.close(devnull)
+
+
 def run(
     source: str,
     operands: Sequence[str] = (),
@@ -173,7 +185,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(f"pyawk: {exc}\n{USAGE}")
         return 2
     except AwkError as exc:
-        sys.stdout.flush()
+        _flush_stdout_or_give_up()
         sys.stderr.write(f"pyawk: {exc}\n")
         return 2
     except BrokenPipeError:
@@ -190,6 +202,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         if hasattr(signal, "SIGPIPE"):  # not on Windows
             signal.signal(signal.SIGPIPE, signal.SIG_DFL)
             os.kill(os.getpid(), signal.SIGPIPE)
+        return 2
+    except OSError as exc:
+        # Any other failure of the operating system that the interpreter
+        # did not turn into an AWK error (for example a write to standard
+        # output on a full disk): report it briefly rather than as a
+        # Python traceback, and exit with status 2 like the C awks.
+        _flush_stdout_or_give_up()
+        sys.stderr.write(f"pyawk: {exc.strerror or exc}\n")
         return 2
     except RecursionError:
         # Parsing or compiling a program nested too deeply even for the big

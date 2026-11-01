@@ -19,7 +19,6 @@ from __future__ import annotations
 import math
 import re
 import subprocess
-import sys
 import time
 from typing import TYPE_CHECKING, Callable
 
@@ -775,10 +774,9 @@ def _fflush(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     it, sval = c.it, c.sval
 
     # fflush() and fflush(""): flush everything (POSIX 2024; gawk and mawk).
+    # The result is 0 if everything was flushed and -1 if any flush failed.
     def fflush_all() -> Value:
-        it.io.flush_all()
-        sys.stdout.flush()
-        return 0.0
+        return float(it.io.flush_all())
 
     if not args:
         return fflush_all

@@ -472,27 +472,26 @@ class IOManager:
             status = reader.close()
         return status
 
-    def flush_all(self) -> None:
-        self.stdout.flush()
-        for stream, _ in self.outputs.values():
-            try:
-                stream.flush()
-            except OSError:
-                pass
+    def flush_all(self) -> int:
+        """Flush standard output and every open output file or command.
 
-    def flush(self, name: str) -> int:
-        """fflush(name): 0 if ``name`` is an open output flushed successfully, else -1."""
-        if name == "/dev/stdout":
-            self.stdout.flush()
-            return 0
-        if name == "/dev/stderr":
-            sys.stderr.flush()
-            return 0
-        entry = self.outputs.get(name)
-        if entry is None:
-            return -1  # not open, or open only for reading
+        Returns 0 if all of them were flushed, -1 if any flush failed (a
+        full disk, say); the others are still flushed.  A broken pipe (the
+        reader has gone away) is not a failure we report: it is passed on,
+        so the CLI ends the program as SIGPIPE ends a C awk (mawk and
+        onetrue-awk; gawk stops with an error).
+        """
+        status = self._flush_one(self.stdout)
+        # .values() gives the (stream, process) pairs; only the stream matters.
+        for stream, _ in self.outputs.values():
+            status = min(status, self._flush_one(stream))
+        return status
+
+    @staticmethod
+    def _flush_one(stream: IO[str]) -> int:
+        """Flush one stream: 0 on success, -1 if the system refused."""
         try:
-            entry[0].flush()
+            stream.flush()
         except BrokenPipeError:
             # The reader has gone away: let this reach the CLI, which ends
             # the program quietly the way a C awk dies of SIGPIPE.
@@ -500,6 +499,17 @@ class IOManager:
         except OSError:
             return -1  # any other failure (disk full, ...) is reported
         return 0
+
+    def flush(self, name: str) -> int:
+        """fflush(name): 0 if ``name`` is an open output flushed successfully, else -1."""
+        if name == "/dev/stdout":
+            return self._flush_one(self.stdout)
+        if name == "/dev/stderr":
+            return self._flush_one(sys.stderr)
+        entry = self.outputs.get(name)
+        if entry is None:
+            return -1  # not open, or open only for reading
+        return self._flush_one(entry[0])
 
     def close_all(self) -> None:
         # Close redirections first, waiting for commands to finish, then
@@ -511,7 +521,14 @@ class IOManager:
             self.close(name)
         for name in list(self.inputs):
             self.close(name)
-        self.stdout.flush()
+        try:
+            self.stdout.flush()
+        except BrokenPipeError:
+            raise  # handled by the caller: death by SIGPIPE
+        except OSError as exc:
+            # Our last output could not be written (a full disk, say).
+            # onetrue-awk and gawk report this and exit with status 2.
+            raise AwkRuntimeError(f"write error on standard output ({exc.strerror})") from None
 
 
 # ---------------------------------------------------------------- interpreter
@@ -657,10 +674,11 @@ class Interpreter:
         finally:
             try:
                 self.io.close_all()
-            except BrokenPipeError:
-                # The reader of our output has gone away.  After a normal
-                # finish, let cli.main turn that into death by SIGPIPE, as
-                # for a C awk; otherwise keep the error already on its way.
+            except (BrokenPipeError, AwkRuntimeError):
+                # The reader of our output has gone away, or the last output
+                # could not be written.  After a normal finish, let cli.main
+                # report it (a broken pipe becomes death by SIGPIPE, as for
+                # a C awk); otherwise keep the error already on its way.
                 if finished:
                     raise
         return self.exit_code
