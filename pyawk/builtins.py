@@ -6,11 +6,11 @@ points: the ``BUILTINS`` table and ``format_printf``.
 
 Pure helpers (``format_printf``, ``substr``, ``substitute`` ...) are kept
 free of interpreter state so they can be unit tested; ``BUILTINS`` maps each
-builtin name to an adapter ``fn(interp, arg_nodes) -> Value`` that the
-runtime calls with the *unevaluated* argument nodes (needed for array
-arguments, lvalue targets and regex literals).  For example ``split(s, a)``
-must receive the *array* ``a`` itself, not its value, and ``sub(/x/, "y", v)``
-must be able to assign back to ``v``.
+builtin name to a compiler ``fn(compiler, arg_nodes) -> closure`` that
+compiler.py calls once per call site with the *unevaluated* argument nodes
+(needed for array arguments, lvalue targets and regex literals).  For
+example ``split(s, a)`` must receive the *array* ``a`` itself, not its
+value, and ``sub(/x/, "y", v)`` must be able to assign back to ``v``.
 """
 
 # Treat type hints as text, so newer syntax such as ``float | None`` is allowed.
@@ -28,11 +28,11 @@ from .errors import AwkRuntimeError
 from .values import UNINIT, StrNum, Value, make_strnum, special_float_str, to_num, to_str
 
 # ``TYPE_CHECKING`` is False when the program runs; the import below is only
-# seen by type checkers.  runtime.py imports this module, so importing it back
-# for real would create a circular import.  That is also why hints below
-# write the class name in quotes: "Interpreter".
+# seen by type checkers.  compiler.py imports this module, so importing it
+# back for real would create a circular import.  That is also why hints
+# below write the class name in quotes: "Compiler".
 if TYPE_CHECKING:  # pragma: no cover
-    from .runtime import Interpreter
+    from .compiler import Compiler
 
 # ----------------------------------------------------------------- printf
 # One printf conversion: % flags width .precision letter, e.g. "%-5.2f".
@@ -322,213 +322,341 @@ def substitute(pattern: re.Pattern[str], repl: str, s: str, global_: bool) -> tu
     return "".join(out), count
 
 
-# ----------------------------------------------------------- adapters
-# Each adapter below evaluates its own arguments (via ``it.eval``), checks
-# the argument count, and calls a pure helper.  ``it`` is the Interpreter.
+# ----------------------------------------------------------- compilers
+# Each builtin has a small *compiler* here: given the Compiler and the
+# argument nodes of one call, it returns a closure that performs that call
+# (see compiler.py for what closures are and why we compile).  Arguments
+# arrive as *nodes*, not values, because some builtins need more than a
+# value: ``split(s, a)`` needs the array ``a`` itself, ``sub(/x/, "y", v)``
+# must assign back to ``v``, and a /regex/ argument is compiled once.
 #
-# Type of an adapter: a function taking (Interpreter, list of nodes) and
-# returning a Value.
-BuiltinFn = Callable[["Interpreter", list[ast.Expr]], Value]
+# Type of a builtin compiler: (Compiler, list of nodes) -> closure.
+Thunk = Callable[[], Value]
+BuiltinFn = Callable[["Compiler", list[ast.Expr]], Thunk]
 
 
-def _argc(name: str, args: list[ast.Expr], lo: int, hi: int) -> None:
-    if not lo <= len(args) <= hi:
-        raise AwkRuntimeError(f"function {name} called with {len(args)} args")
+def _arity(name: str, args: list[ast.Expr], lo: int, hi: int) -> Thunk | None:
+    """None if the call has an allowed number of arguments, else a closure
+    that reports the mistake when the call runs (not before: AWK only
+    complains about calls that actually happen)."""
+    if lo <= len(args) <= hi:
+        return None
+    msg = f"function {name} called with {len(args)} args"
+
+    def fail() -> Value:
+        raise AwkRuntimeError(msg)
+
+    return fail
 
 
-def _length(it: "Interpreter", args: list[ast.Expr]) -> Value:
+def _length(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     """length, length(s), or length(array) (number of elements: an extension)."""
-    _argc("length", args, 0, 1)
+    if bad := _arity("length", args, 0, 1):  # ``:=`` assigns inside the test
+        return bad
+    it = c.it
     if not args:
-        return float(len(it.get_record_text()))
+        return lambda: float(len(it.record))
     a = args[0]
+    e, sval = c.expr(a), c.sval
     if isinstance(a, ast.Var):
         # A bare name may be an array (count its elements) or a variable
         # never used yet: length 0, and it stays untyped, so it may still
         # become an array later (onetrue-awk and mawk; gawk disagrees).
-        kind = it.var_kind(a.name)
-        if kind == "array":
-            return float(len(it.get_array(a.name)))
-        if kind == "untyped":
-            return 0.0
-    return float(len(it.str_of(it.eval(a))))
+        kind, arr = c.var_kind(a.name), c.array(a.name)
+
+        def length_name() -> Value:
+            k = kind()
+            if k == "array":
+                return float(len(arr()))
+            if k == "untyped":
+                return 0.0
+            return float(len(sval(e())))
+
+        return length_name
+    return lambda: float(len(sval(e())))
 
 
-def _substr(it: "Interpreter", args: list[ast.Expr]) -> Value:
-    _argc("substr", args, 2, 3)
-    s = it.str_of(it.eval(args[0]))
-    m = to_num(it.eval(args[1]))
-    n = to_num(it.eval(args[2])) if len(args) == 3 else None
-    return substr(s, m, n)
+def _substr(c: "Compiler", args: list[ast.Expr]) -> Thunk:
+    if bad := _arity("substr", args, 2, 3):
+        return bad
+    s, m, sval = c.expr(args[0]), c.expr(args[1]), c.sval
+    if len(args) == 2:
+        return lambda: substr(sval(s()), to_num(m()))
+    n = c.expr(args[2])
+
+    def substr3() -> Value:
+        text = sval(s())
+        start = to_num(m())
+        return substr(text, start, to_num(n()))
+
+    return substr3
 
 
-def _index(it: "Interpreter", args: list[ast.Expr]) -> Value:
-    _argc("index", args, 2, 2)
-    return float(index(it.str_of(it.eval(args[0])), it.str_of(it.eval(args[1]))))
+def _index(c: "Compiler", args: list[ast.Expr]) -> Thunk:
+    if bad := _arity("index", args, 2, 2):
+        return bad
+    s, t, sval = c.expr(args[0]), c.expr(args[1]), c.sval
+
+    def index_() -> Value:
+        text = sval(s())
+        return float(index(text, sval(t())))
+
+    return index_
 
 
-def _split(it: "Interpreter", args: list[ast.Expr]) -> Value:
+def _split(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     """split(s, arr [, sep]): fill arr[1..n] and return n.
 
     The separator follows FS rules (" " = runs of blanks, one character =
     that character, longer = a regex); a /regex/ literal is used directly.
     """
-    _argc("split", args, 2, 3)
-    s = it.str_of(it.eval(args[0]))
+    if bad := _arity("split", args, 2, 3):
+        return bad
+    it, sval, s = c.it, c.sval, c.expr(args[0])
     target = args[1]
     if not isinstance(target, ast.Var):
-        raise AwkRuntimeError("split: second argument must be an array name")
-    if len(args) == 3:
-        sep = args[2]
-        if isinstance(sep, ast.Regex):
-            pieces = it.split_regex(s, sep.source)
-        else:
-            pieces = it.split_with_fs(s, it.str_of(it.eval(sep)))
+
+        def not_array() -> Value:
+            s()  # the string is evaluated before the mistake is noticed
+            raise AwkRuntimeError("split: second argument must be an array name")
+
+        return not_array
+    arr = c.array(target.name)
+    pieces_of: Callable[[str], list[str]]
+    if len(args) == 3 and isinstance(args[2], ast.Regex):
+        source = args[2].source
+        pieces_of = lambda text: it.split_regex(text, source)  # noqa: E731
+    elif len(args) == 3:
+        sep = c.expr(args[2])
+        pieces_of = lambda text: it.split_with_fs(text, sval(sep()))  # noqa: E731
     else:
-        pieces = it.split_with_fs(s, it.str_of(it.get_var("FS")))
-    arr = it.get_array(target.name)
-    arr.clear()
-    # enumerate(pieces, 1) yields (1, first), (2, second), ...  Keys are
-    # strings because AWK array subscripts always are; elements are strnums.
-    for k, piece in enumerate(pieces, 1):
-        arr[str(k)] = make_strnum(piece)
-    return float(len(pieces))
+        fs = c.scalar_getter("FS")
+        pieces_of = lambda text: it.split_with_fs(text, sval(fs()))  # noqa: E731
+
+    def split() -> Value:
+        pieces = pieces_of(sval(s()))
+        a = arr()
+        a.clear()
+        # enumerate(pieces, 1) yields (1, first), (2, second), ...  Keys are
+        # strings because AWK array subscripts always are; elements are strnums.
+        for k, piece in enumerate(pieces, 1):
+            a[str(k)] = make_strnum(piece)
+        return float(len(pieces))
+
+    return split
 
 
-def _sub_common(it: "Interpreter", args: list[ast.Expr], global_: bool) -> Value:
-    name = "gsub" if global_ else "sub"
-    _argc(name, args, 2, 3)
-    pattern = it.regex_of(args[0])
-    repl = it.str_of(it.eval(args[1]))
+def _sub_common(c: "Compiler", args: list[ast.Expr], global_: bool) -> Thunk:
+    if bad := _arity("gsub" if global_ else "sub", args, 2, 3):
+        return bad
+    pattern, repl, sval = c.regex(args[0]), c.expr(args[1]), c.sval
     # The default target is $0.
     target: ast.Expr = args[2] if len(args) == 3 else ast.Field(ast.Num(0.0))
     if isinstance(target, ast.LVALUE_TYPES):
         # Resolve the target once, so ``sub(/a/, "b", arr[i++])`` increments
         # i only once even though we both read and write the element.
-        ref = it.resolve(target)
-        original = it.str_of(it.get_ref(ref))
-        result, count = substitute(pattern, repl, original, global_)
-        if count:  # only assign when something changed ($0 is not rebuilt otherwise)
-            it.set_ref(ref, result)
-        return float(count)
+        resolve, get_ref, set_ref = c.ref(target), c.get_ref, c.set_ref
+
+        def sub() -> Value:
+            pat = pattern()
+            r = sval(repl())
+            ref = resolve()
+            result, count = substitute(pat, r, sval(get_ref(ref)), global_)
+            if count:  # only assign when something changed ($0 is not rebuilt otherwise)
+                set_ref(ref, result)
+            return float(count)
+
+        return sub
     # Non-lvalue target: compute and discard (gawk warns; mawk errors).
-    # "_" is the conventional name for a value we ignore.
-    _, count = substitute(pattern, repl, it.str_of(it.eval(target)), global_)
-    return float(count)
+    e = c.expr(target)
+
+    def sub_value() -> Value:
+        pat = pattern()
+        r = sval(repl())
+        # "_" is the conventional name for a value we ignore.
+        _, count = substitute(pat, r, sval(e()), global_)
+        return float(count)
+
+    return sub_value
 
 
-def _sub(it: "Interpreter", args: list[ast.Expr]) -> Value:
-    return _sub_common(it, args, False)
+def _sub(c: "Compiler", args: list[ast.Expr]) -> Thunk:
+    return _sub_common(c, args, False)
 
 
-def _gsub(it: "Interpreter", args: list[ast.Expr]) -> Value:
-    return _sub_common(it, args, True)
+def _gsub(c: "Compiler", args: list[ast.Expr]) -> Thunk:
+    return _sub_common(c, args, True)
 
 
-def _match(it: "Interpreter", args: list[ast.Expr]) -> Value:
+def _match(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     """match(s, re): sets RSTART (1-based, 0 if none) and RLENGTH (-1 if none)."""
-    _argc("match", args, 2, 2)
-    s = it.str_of(it.eval(args[0]))
-    m = it.regex_of(args[1]).search(s)
-    if m is None:
-        start, length = 0.0, -1.0
-    else:
-        start, length = float(m.start() + 1), float(m.end() - m.start())
-    it.set_var("RSTART", start)
-    it.set_var("RLENGTH", length)
-    return start
+    if bad := _arity("match", args, 2, 2):
+        return bad
+    s, pattern, sval = c.expr(args[0]), c.regex(args[1]), c.sval
+    set_start, set_length = c.scalar_setter("RSTART"), c.scalar_setter("RLENGTH")
+
+    def match() -> Value:
+        text = sval(s())
+        m = pattern().search(text)
+        if m is None:
+            start, length = 0.0, -1.0
+        else:
+            start, length = float(m.start() + 1), float(m.end() - m.start())
+        set_start(start)
+        set_length(length)
+        return start
+
+    return match
 
 
-def _sprintf(it: "Interpreter", args: list[ast.Expr]) -> Value:
+def _sprintf(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     if not args:
-        raise AwkRuntimeError("sprintf: no format")
-    # A list comprehension: evaluate every argument, collecting the results.
-    vals = [it.eval(a) for a in args]
-    return format_printf(it.str_of(vals[0]), vals[1:], it.convfmt)
+        return _fail("sprintf: no format")
+    parts, sval, vars_ = [c.expr(a) for a in args], c.sval, c.vars
+
+    def sprintf() -> Value:
+        # A list comprehension: evaluate every argument, collecting the results.
+        vals = [p() for p in parts]
+        return format_printf(sval(vals[0]), vals[1:], to_str(vars_["CONVFMT"]))
+
+    return sprintf
+
+
+def _fail(msg: str) -> Thunk:
+    def fail() -> Value:
+        raise AwkRuntimeError(msg)
+
+    return fail
 
 
 def _math1(fn: Callable[[float], float], name: str) -> BuiltinFn:
-    """Build an adapter for a one-argument math function such as sqrt.
+    """Build the compiler for a one-argument math function such as sqrt.
 
     Python's math functions raise errors where C returns inf or NaN
     (e.g. log(0)); we return the C results, as other awks print them.
-    The inner function ``impl`` remembers ``fn`` and ``name`` (a *closure*).
+    The inner functions remember ``fn`` and ``name`` (closures).
     """
 
-    def impl(it: "Interpreter", args: list[ast.Expr]) -> Value:
-        _argc(name, args, 1, 1)
-        x = to_num(it.eval(args[0]))
-        try:
-            return float(fn(x))
-        except (ValueError, OverflowError):
-            if name == "log":
-                return -math.inf if x == 0 else math.nan
-            if name == "exp":
-                return math.inf
-            return math.nan
+    def compile_math(c: "Compiler", args: list[ast.Expr]) -> Thunk:
+        if bad := _arity(name, args, 1, 1):
+            return bad
+        e = c.expr(args[0])
 
-    return impl
+        def impl() -> Value:
+            x = to_num(e())
+            try:
+                return float(fn(x))
+            except (ValueError, OverflowError):
+                if name == "log":
+                    return -math.inf if x == 0 else math.nan
+                if name == "exp":
+                    return math.inf
+                return math.nan
 
+        return impl
 
-def _int(it: "Interpreter", args: list[ast.Expr]) -> Value:
-    _argc("int", args, 1, 1)
-    x = to_num(it.eval(args[0]))
-    if x != x or x in (math.inf, -math.inf):
-        return x
-    return float(math.trunc(x))
+    return compile_math
 
 
-def _atan2(it: "Interpreter", args: list[ast.Expr]) -> Value:
-    _argc("atan2", args, 2, 2)
-    return math.atan2(to_num(it.eval(args[0])), to_num(it.eval(args[1])))
+def _int(c: "Compiler", args: list[ast.Expr]) -> Thunk:
+    if bad := _arity("int", args, 1, 1):
+        return bad
+    e = c.expr(args[0])
+
+    def int_() -> Value:
+        x = to_num(e())
+        if x != x or x in (math.inf, -math.inf):
+            return x
+        return float(math.trunc(x))
+
+    return int_
 
 
-def _rand(it: "Interpreter", args: list[ast.Expr]) -> Value:
-    _argc("rand", args, 0, 0)
-    return it.rng.random()
+def _atan2(c: "Compiler", args: list[ast.Expr]) -> Thunk:
+    if bad := _arity("atan2", args, 2, 2):
+        return bad
+    y, x = c.expr(args[0]), c.expr(args[1])
+
+    def atan2() -> Value:
+        yv = to_num(y())
+        return math.atan2(yv, to_num(x()))
+
+    return atan2
 
 
-def _srand(it: "Interpreter", args: list[ast.Expr]) -> Value:
-    _argc("srand", args, 0, 1)
-    prev = it.seed
-    it.seed = to_num(it.eval(args[0])) if args else float(int(time.time()))
-    it.rng.seed(it.seed)
-    return prev
+def _rand(c: "Compiler", args: list[ast.Expr]) -> Thunk:
+    if bad := _arity("rand", args, 0, 0):
+        return bad
+    it = c.it
+    return lambda: it.rng.random()
 
 
-def _tolower(it: "Interpreter", args: list[ast.Expr]) -> Value:
-    _argc("tolower", args, 1, 1)
-    return it.str_of(it.eval(args[0])).lower()
+def _srand(c: "Compiler", args: list[ast.Expr]) -> Thunk:
+    if bad := _arity("srand", args, 0, 1):
+        return bad
+    it = c.it
+    e = c.expr(args[0]) if args else None
+
+    def srand() -> Value:
+        prev = it.seed
+        it.seed = to_num(e()) if e is not None else float(int(time.time()))
+        it.rng.seed(it.seed)
+        return prev
+
+    return srand
 
 
-def _toupper(it: "Interpreter", args: list[ast.Expr]) -> Value:
-    _argc("toupper", args, 1, 1)
-    return it.str_of(it.eval(args[0])).upper()
+def _tolower(c: "Compiler", args: list[ast.Expr]) -> Thunk:
+    if bad := _arity("tolower", args, 1, 1):
+        return bad
+    e, sval = c.expr(args[0]), c.sval
+    return lambda: sval(e()).lower()
 
 
-def _system(it: "Interpreter", args: list[ast.Expr]) -> Value:
-    _argc("system", args, 1, 1)
-    cmd = it.str_of(it.eval(args[0]))
-    it.io.flush_all()
-    rc = subprocess.call(cmd, shell=True)
-    # Python reports "killed by signal N" as -N; awks report 256 + N.
-    return float(rc if rc >= 0 else 256 - rc)
+def _toupper(c: "Compiler", args: list[ast.Expr]) -> Thunk:
+    if bad := _arity("toupper", args, 1, 1):
+        return bad
+    e, sval = c.expr(args[0]), c.sval
+    return lambda: sval(e()).upper()
 
 
-def _close(it: "Interpreter", args: list[ast.Expr]) -> Value:
-    _argc("close", args, 1, 1)
-    return float(it.io.close(it.str_of(it.eval(args[0]))))
+def _system(c: "Compiler", args: list[ast.Expr]) -> Thunk:
+    if bad := _arity("system", args, 1, 1):
+        return bad
+    e, sval, it = c.expr(args[0]), c.sval, c.it
+
+    def system() -> Value:
+        cmd = sval(e())
+        it.io.flush_all()
+        rc = subprocess.call(cmd, shell=True)
+        # Python reports "killed by signal N" as -N; awks report 256 + N.
+        return float(rc if rc >= 0 else 256 - rc)
+
+    return system
 
 
-def _fflush(it: "Interpreter", args: list[ast.Expr]) -> Value:
-    _argc("fflush", args, 0, 1)
-    it.io.flush_all()
-    sys.stdout.flush()
-    return 0.0
+def _close(c: "Compiler", args: list[ast.Expr]) -> Thunk:
+    if bad := _arity("close", args, 1, 1):
+        return bad
+    e, sval, it = c.expr(args[0]), c.sval, c.it
+    return lambda: float(it.io.close(sval(e())))
 
 
-# Dispatch table: the runtime looks up a builtin by name here and calls it,
-# instead of using a long if/elif chain over the names.
+def _fflush(c: "Compiler", args: list[ast.Expr]) -> Thunk:
+    if bad := _arity("fflush", args, 0, 1):
+        return bad
+    it = c.it
+
+    def fflush() -> Value:
+        it.io.flush_all()
+        sys.stdout.flush()
+        return 0.0
+
+    return fflush
+
+
+# Dispatch table: the compiler looks up a builtin by name here, instead of
+# using a long if/elif chain over the names.
 BUILTINS: dict[str, BuiltinFn] = {
     "length": _length,
     "substr": _substr,
