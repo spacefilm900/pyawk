@@ -16,8 +16,8 @@ p.20	run		agree
 p.21	run		agree
 p.21a	run		agree
 p.22	run		agree
-p.23	skip	deferred: range patterns	agree
-p.24	skip	deferred: range patterns	agree
+p.23	run		agree
+p.24	run		agree
 p.25	run		agree
 p.26	run		agree
 p.26a	run		agree
@@ -173,9 +173,9 @@ t.ofs	run		agree
 t.ors	run		agree
 t.pat	run		agree
 t.pipe	run		agree
-t.pp	skip	deferred: range patterns	agree
-t.pp1	skip	deferred: range patterns	agree
-t.pp2	skip	deferred: range patterns	agree
+t.pp	run		agree
+t.pp1	run		agree
+t.pp2	run		agree
 t.printf	run		agree
 t.printf2	skip	onetrue quirk / unspecified: references disagree	onetrue differs (mawk == gawk --posix)
 t.quote	run		agree

@@ -105,13 +105,13 @@ def static_skip_reason(source: str) -> str | None:
     Order matters only for which reason is reported when several apply.
     """
     # 1. Ask pyawk's own parser: it raises AwkUnsupportedError for the
-    #    features deferred in spec v0.1 (functions, ranges, nextfile, ...).
+    #    features still deferred (currently only nextfile).
     #    Any other syntax error is *not* a skip: if the references accept the
     #    program, pyawk failing to parse it is a bug we want to see.
     try:
         parse(source)
     except AwkUnsupportedError as e:
-        # str(e) looks like "syntax error at source line 1: range patterns
+        # str(e) looks like "syntax error at source line 1: nextfile
         # is not supported yet (...)"; keep just the feature name so the
         # reasons group nicely in the report.
         m = re.search(r": (.+?) is not supported yet", str(e))
