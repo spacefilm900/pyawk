@@ -87,6 +87,26 @@ C_INT_CASES = [
 def test_printf_c_integer_flags(fmt: str, arg: int, expected: str) -> None:
     assert format_printf(fmt, [float(arg)]) == expected
 
+
+# C length modifiers (h, hh, l, ll, L, q, j, z, t) mean nothing in awk,
+# where every number is a double.  mawk, onetrue-awk and gawk (without
+# --posix) all skip them, so "%ld" prints the number like "%d".
+# (CodeRabbit review of v1.0, finding 1.)
+LENGTH_MODIFIER_CASES = [
+    ("%ld", 5, "5"), ("%hd", 6, "6"), ("%lld", 7, "7"), ("%hhu", 9, "9"),
+    ("%lx", 255, "ff"), ("%5.2lf", 2.25, " 2.25"), ("%Lf", 1.5, "1.500000"),
+    ("%zd", 10, "10"), ("%jd", 11, "11"), ("%-4li|", 3, "3   |"), ("%lc", 65, "A"),
+    # A modifier with no conversion letter after it is still copied verbatim.
+    ("%l|", 1, "%l|"),
+]
+
+
+@pytest.mark.parametrize("fmt,arg,expected", LENGTH_MODIFIER_CASES)
+def test_printf_ignores_c_length_modifiers(fmt: str, arg: float, expected: str) -> None:
+    assert format_printf(fmt, [float(arg)]) == expected
+    # and the same through a whole program, which uses the fast path
+    assert awk(f'BEGIN {{ printf "{fmt}", {arg} }}')[0] == expected
+
 def test_substr_edges() -> None:
     assert substr("hello", 2, 3) == "ell"
     assert substr("hello", 0) == "hello"

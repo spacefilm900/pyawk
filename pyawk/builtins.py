@@ -37,7 +37,15 @@ if TYPE_CHECKING:  # pragma: no cover
 # ----------------------------------------------------------------- printf
 # One printf conversion: % flags width .precision letter, e.g. "%-5.2f".
 # The four parenthesised groups capture those four parts.
-_SPEC_RE = re.compile(r"%([-+ #0]*)(\*|\d+)?(?:\.(\*|\d*))?([a-zA-Z%])")
+#
+# Between the precision and the letter, C allows a "length modifier"
+# (h, hh, l, ll, L, q, j, z, t, as in "%ld").  In awk every number is a
+# double, so the modifiers mean nothing; mawk, onetrue-awk and gawk all
+# skip them.  ``(?:[hlLqjzt]*)`` matches them without capturing, so they
+# are simply dropped and there are still four groups.  If no conversion
+# letter follows ("%l|"), the regex backtracks, takes "l" itself as the
+# (unknown) letter and the text is copied verbatim, as gawk does.
+_SPEC_RE = re.compile(r"%([-+ #0]*)(\*|\d+)?(?:\.(\*|\d*))?(?:[hlLqjzt]*)([a-zA-Z%])")
 
 
 def _to_c_int(n: float) -> int:
