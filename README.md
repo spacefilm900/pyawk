@@ -23,7 +23,7 @@ assignments processed when reached, as in POSIX. Exit status is the value of
 | Program | `BEGIN`, `pattern { action }`, `pattern`, `{ action }`, `start, end [{ action }]`, `END` (multiple of each), `function` definitions |
 | Functions | `function name(params) { ... }` anywhere in the program (calls may precede the definition), `name(args)` calls (no space before `(`), `return [expr]`, extra parameters as local variables, scalars by value, arrays by reference (an unused variable passed in becomes an array if the function uses it as one), recursion (depth > 10000) |
 | Patterns | any expression, `/ere/`, `!`, `&&`, `\|\|`, `~`, `!~`; range patterns `start, end` (each rule keeps its own state, which carries over from one input file to the next; a newline may follow the comma) |
-| Statements | `if/else`, `while`, `do-while`, `for(;;)`, `for (k in a)`, `break`, `continue`, `next`, `exit [n]`, `return [expr]`, `print`, `printf`, `delete a[k]`, `delete a`, `{ }` blocks |
+| Statements | `if/else`, `while`, `do-while`, `for(;;)`, `for (k in a)`, `break`, `continue`, `next`, `nextfile` (POSIX 2024; not in BEGIN/END or a function), `exit [n]`, `return [expr]`, `print`, `printf`, `delete a[k]`, `delete a`, `{ }` blocks |
 | Fields | `$0`, `$n`, `$expr`, field assignment rebuilds `$0` with `OFS`, `NF` assignment truncates/extends |
 | Variables | `NR FNR NF FS OFS RS ORS FILENAME ARGC ARGV CONVFMT OFMT RSTART RLENGTH SUBSEP` (+ `ENVIRON`) |
 | FS | `" "` (default whitespace), single character, a regex when longer, `""` splits characters |
@@ -31,10 +31,10 @@ assignments processed when reached, as in POSIX. Exit status is the value of
 | Arrays | associative, `(i,j)` subscripts with `SUBSEP`, `in`, `(i,j) in a`, `delete` |
 | Builtins | `length substr index split sub gsub match sprintf tolower toupper sin cos atan2 exp log sqrt int rand srand system close fflush` |
 | getline | `getline`, `getline var`, `getline < file`, `getline var < file`, `cmd \| getline [var]` |
-| Output | `print`/`printf` with `> file`, `>> file`, `\| cmd`; `close()` |
+| Output | `print`/`printf` with `> file`, `>> file`, `\| cmd`; `close()` (a command's exit status), `fflush([name])`, `/dev/stdout`, `/dev/stderr`; a closed pipe ends pyawk by SIGPIPE, as in other awks |
 | Values | dual string/number values with POSIX *strnum* semantics for fields, `getline` input, `split()` elements, `ARGV`, `-v` and operand assignments |
 
-Deferred (fails with a clear "not supported yet" error): `nextfile`.
+Deferred: nothing at present (`nextfile` was the last deferred feature).
 
 Not accepted, on purpose: `func` as a synonym for `function` (an old
 onetrue-awk/gawk extension; POSIX, `gawk --posix` and mawk treat `func` as an
@@ -51,10 +51,17 @@ scripts/regen_golden.py --awk gawk  # use another reference awk
 ```
 
 Golden cases live in `awk_tests/golden/<category>/NAME.{awk,in,out[,args]}`
-and run as `awk [args] -f NAME.awk NAME.in` from the category directory.
-`scripts/make_corpus.py` is the source of the `.awk/.in/.args` files.
-Cases listed in `awk_tests/golden/OVERRIDES` have hand-corrected `.out`
-files (mawk is the outlier there); `regen_golden.py` leaves them alone.
+and run as `awk [args] -f NAME.awk NAME.in` in a throwaway copy of the
+category directory (a sandbox, so programs may write and read back files).
+Optional per-case files: `NAME.environ` (`NAME=value` lines added to the
+environment), `NAME.operands` (operands used instead of `NAME.in`) and
+`NAME.stdin` (standard input). `scripts/make_corpus.py` is the source of
+all of them. Cases listed in `awk_tests/golden/OVERRIDES` have
+hand-corrected `.out` files (mawk is the outlier there); `regen_golden.py`
+leaves them alone. `awk_tests/golden/DECISIONS` lists cases that follow a
+project decision instead of the majority, and
+`scripts/regen_golden.py --vote CAT/NAME...` shows how the three reference
+awks vote on given cases.
 
 ### Imported onetrue-awk suite
 
@@ -97,10 +104,10 @@ As of 2026-11-01 (`.venv/bin/python -m pytest -q`, `scripts/run_golden.py`):
 
 | suite | pass | fail | skip |
 |---|---|---|---|
-| pytest (all) | 744 | 0 | 123 |
-| own golden corpus | 99 | 0 | 0 |
+| pytest (all) | 803 | 0 | 122 |
+| own golden corpus | 129 | 0 | 0 |
 | imported onetrue-awk | 215 | 0 | 9 |
-| imported gawk | 190 | 0 | 114 |
+| imported gawk | 191 | 0 | 113 |
 
 Both `KNOWN_FAILURES` lists are empty.
 

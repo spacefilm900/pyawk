@@ -13,7 +13,7 @@ program runs; the runtime then only calls those functions.
 
 | Module | Responsibility |
 |---|---|
-| `errors.py` | `AwkError` → `AwkSyntaxError` (with source line), `AwkRuntimeError`, `AwkUnsupportedError` (deferred features) |
+| `errors.py` | `AwkError` → `AwkSyntaxError` (with source line), `AwkRuntimeError`, `AwkUnsupportedError` (deferred features; nothing raises it since `nextfile` was added, but the importers still catch it) |
 | `values.py` | value model, string↔number conversion, comparison rules |
 | `lexer.py` | tokens, regex-vs-division, newline rules, string escapes |
 | `ast.py` | slotted dataclasses for expressions, statements, rules |
@@ -114,7 +114,7 @@ Recursive descent; precedence from lowest to highest:
 = += -= *= /= %= ^=   (right)      ternary ?: (right)
 ||                                  &&
 in                                  ~ !~
-< <= != == > >=  (non-assoc), "cmd" | getline
+< <= != == > >=  (non-assoc), "cmd" | getline (left operand)
 concatenation                       + -
 * / %                               unary ! + -
 ^ (right; RHS may be unary: 2^-1)   ++ -- (pre/post)
@@ -141,13 +141,20 @@ $                                   ( grouping )
   the comma but not precede it (a newline ends the rule), and `BEGIN`/`END`
   cannot be endpoints. All three references agree on every one of these.
   The end condition is stored in `Rule.end` (None for an ordinary rule).
+* `cmd | getline [var]` takes a concatenation as the command, but once
+  read, the whole `cmd | getline var` is an ordinary operand
+  (`Parser.parse_operand_tail`): `cmd | getline x + 1` is
+  `(cmd | getline x) + 1`, likewise `*`, `%`, `^` and concatenation. This
+  is POSIX's `unary_expr '|' simple_get` and what mawk and gawk do;
+  onetrue-awk rejects `* / % ^` there and reads `+ 1` as part of the target.
 * `for (k in a)` is recognised by a 4-token lookahead.
 * Lvalues: `Var`, `Index`, `Field`. Anything else on the left of `=`,
   `++`/`--` is a syntax error.
 * Context checks while parsing: `return` only inside a function body,
   `break`/`continue` only inside a loop (`loop_depth`, reset to 0 for a
   function body, so a loop in the caller does not count), `next` not inside
-  a function. All are syntax errors, as in the reference awks.
+  a function, `nextfile` not inside a function or a BEGIN/END action
+  (`in_special` records which of BEGIN/END is being parsed). All are syntax errors, as in the reference awks.
 * Function definitions go into `Program.functions` (name → `Function`).
   Because a function may be used before it is defined, some checks run
   after the whole program is parsed (`Parser.check_functions`), using the
@@ -170,9 +177,9 @@ $                                   ( grouping )
   *expressions* (`Thunk`) return an AWK value; *conditions* (`CondFn`)
   return a Python bool, for `if`, loops, patterns, `&&`, `||`, `!`;
   *statements* (`StmtFn`) return None or a signal.
-* **Control flow as return values.** `break`, `continue`, `next` and
-  `return` make a statement return a signal object (`BREAK`, `CONTINUE`,
-  `NEXT`, `RETURN`; the return value travels in `Interpreter.ret_value`).
+* **Control flow as return values.** `break`, `continue`, `next`,
+  `nextfile` and `return` make a statement return a signal object (`BREAK`,
+  `CONTINUE`, `NEXT`, `NEXTFILE`, `RETURN`; the return value travels in `Interpreter.ret_value`).
   Blocks and loops pass on signals they do not handle. The parser
   guarantees these signals never have to cross an expression. `exit` and
   run-time errors are still exceptions (`ExitEx`, `AwkRuntimeError`)
@@ -216,9 +223,13 @@ $                                   ( grouping )
   `close()` returns the command's exit status (mawk and default gawk;
   onetrue-awk and gawk --posix return 0). The references split 2-2 and POSIX
   leaves it loose, so the user chose the exit status (2026-11-01): it lets a
-  script check whether a command succeeded. The gawk test close_status stays
-  skipped via `REVIEWED_SKIP` in scripts/import_gawk.py. At exit, redirections are
-  closed first and stdout flushed after (matches mawk's observable order).
+  script check whether a command succeeded. The gawk test close_status runs
+  under this decision (`DECIDED` in scripts/import_gawk.py; its expected
+  output is gawk's `.ok`, which mawk matches), and the golden case
+  `io/close_status` is listed in `awk_tests/golden/DECISIONS`. At exit,
+  redirections are closed first and stdout flushed after (matches mawk's
+  observable order). The full I/O behaviour is in "ENVIRON, I/O and
+  nextfile" below.
 * Arithmetic: division/modulo by zero is a runtime error (like all awks);
   `%` is C `fmod`; `^` overflows to inf.
 
@@ -416,6 +427,29 @@ Numbers now use ASCII digits only (`"٣"` is no longer the number 3), as
 in all three reference awks; Python's `float()` had accepted any Unicode
 digit.
 
+**After the enhancements branch** (ENVIRON tests, I/O fixes, `nextfile`;
+the main loop now checks for a `NEXTFILE` signal). Run on the same box,
+best of 5, alternating v1.0 and the branch (two runs of v1.0, three of the
+branch, best of each):
+
+| workload | DESIGN baseline | v1.0 now | enhancements | vs v1.0 now |
+|---|---|---|---|---|
+| print1 | 0.353 | 0.365 | 0.364 | -0.3 % |
+| sum | 0.379 | 0.397 | 0.397 | 0.0 % |
+| fields | 1.867 | 1.925 | 1.936 | +0.6 % |
+| regex | 0.560 | 0.573 | 0.588 | +2.6 % |
+| wordcount | 1.565 | 1.645 | 1.550 | -5.8 % |
+| printf | 0.837 | 0.862 | 0.865 | +0.3 % |
+| gsub | 0.812 | 0.832 | 0.843 | +1.3 % |
+| funcs | 0.459 | 0.470 | 0.474 | +0.9 % |
+| begin_loop | 0.795 | 0.822 | 0.804 | -2.2 % |
+
+The box itself ran 2–5 % slower than when the baseline was recorded (the
+"v1.0 now" column: same code as the baseline); against v1.0 measured
+now, the branch is within noise (at most +2.6 %, within the 5 % budget).
+Against the recorded baseline it is at most +5.0 % (wordcount best
+run 1.550 is faster; regex 0.588 vs 0.560), all of it machine drift.
+
 **Where the time goes now** (cProfile on the workloads):
 
 * the evaluator's own overhead: one Python call per AST node per
@@ -438,10 +472,12 @@ path for `sub`/`gsub` with a constant replacement containing no `&`.
 
 ## Test status
 
-pytest: 744 passed, 123 skipped. Golden summaries: own corpus 99/99,
-onetrue-awk 215 pass / 9 skip, gawk 190 pass / 114 skip, no failures and
-empty `KNOWN_FAILURES` lists (2026-11-01). The last 18 gawk failures were
-fixed except close_status, now a reviewed skip (see `close()` above).
+pytest: 803 passed, 122 skipped. Golden summaries: own corpus 129/129
+(nine v1.0 categories with 99 cases, plus environ 5, io 18, nextfile 7),
+onetrue-awk 215 pass / 9 skip, gawk 191 pass / 113 skip, no failures and
+empty `KNOWN_FAILURES` lists (2026-11-01, `enhancements` branch). v1.0 had
+744 / 99 / 215 / 190; the extra gawk case is close_status (see `close()`
+above).
 
 Semantics settled by those fixes (all three references agree unless noted;
 otherwise the majority wins):
@@ -451,7 +487,8 @@ otherwise the majority wins):
   concatenation or unary operators it is a syntax error.
 * `for (init; test; step)`: init and step may be `print`, `printf` or
   `delete` (onetrue-awk, gawk; mawk rejects). A bare `printf` prints nothing.
-* `cmd | getline x y` is `(cmd | getline x) y`.
+* `cmd | getline x y` is `(cmd | getline x) y` (and `cmd | getline x + 1`
+  is `(cmd | getline x) + 1`; see Parser).
 * `$` with a unary operator takes a unary expression: `$-i++` is
   `$(-(i++))`; a nested `$` takes its own `++`: `$$a++++` is `$($a++)++`.
 * `^+`, `^*`, `^?` in a regex repeat the anchor (onetrue-awk, gawk; mawk
@@ -460,6 +497,126 @@ otherwise the majority wins):
   bumps c even at end of file (mawk, gawk; onetrue-awk does not).
 * printf integer conversions follow C flag rules (`%#o`, `%+u`, `%.0d`...).
 * A string assigned to `$0` stays a string, not a strnum.
+
+## ENVIRON, I/O and nextfile
+
+Work on the `enhancements` branch after v1.0, in this order: ENVIRON, an
+audit of the I/O features, then `nextfile`. Every behaviour below was run
+under pyawk and the three references (mawk, onetrue-awk, `gawk --posix`);
+the majority wins, and two-way splits are listed under "Open decisions".
+
+### Test infrastructure
+
+* **Sandboxed golden runs.** Each golden case runs in a throwaway copy of
+  its category directory, so a program may create, append to and read back
+  files with relative names without touching the repository.
+* **Optional per-case files.** `NAME.environ` (`NAME=value` lines added to
+  the environment), `NAME.operands` (the operands to use instead of
+  `NAME.in`; may name other cases' `.in` files and `-`), `NAME.stdin`
+  (standard input). `scripts/make_corpus.py` writes them all.
+* **`regen_golden.py --vote CAT/NAME...`** runs the named cases under all
+  three references and reports which agree with the `.out` (OK), which
+  case has no majority, and which is DECIDED.
+* **`awk_tests/golden/DECISIONS`** lists cases whose `.out` follows a
+  project decision rather than the majority (currently `io/close_status`).
+  OVERRIDES remains for cases where mawk is the outlier.
+* **`DECIDED` in scripts/import_gawk.py** does the same for imported gawk
+  tests: the case runs with gawk's `.ok` as the expected output, and the
+  importer stops if mawk (whose answer was chosen) ever disagrees.
+* Golden runs compare stdout only, so exit codes and error messages
+  (SIGPIPE, syntax errors) are covered by unit tests in `tests/test_io.py`
+  and `tests/test_parser.py`.
+
+### ENVIRON
+
+ENVIRON already existed in v1.0 (`Interpreter.__init__` copies
+`os.environ`, every value a strnum candidate); this round added tests: the
+golden `environ` category (values printed verbatim with no escape
+processing, numeric-looking values comparing as numbers, array operations,
+use in main rules, and child processes seeing the original environment
+even after ENVIRON is changed, on which all three references agree). The
+static ENVIRON skips in both importers were removed; no imported test
+was waiting on it (gawk's funstack, which had been skipped for ENVIRON, is
+now skipped as an error-message test).
+
+### I/O checklist
+
+Each item: what was checked, and the result. "Fixed" items were wrong
+before this round and have a commit and tests.
+
+| # | Item | Result |
+|---|---|---|
+| 1 | `getline` / `getline var` from the main input: sets `$0`/NF or var, NR, FNR; 1 / 0; crosses files | correct |
+| 2 | `getline < file`, `getline var < file`: NR/FNR unchanged; -1 for an unreadable file | correct |
+| 3 | `cmd \| getline [var]`: NR left alone (all three references, against POSIX's text) | **fixed** (6d9af6e) |
+| 4 | getline in BEGIN reads the first operand; FILENAME set by the main rules | correct |
+| 5 | getline from `-` and `/dev/stdin` | correct |
+| 6 | `>` truncates once per name, `>>` appends; one name is one stream | correct |
+| 7 | `print \| cmd`: output reaches the command; `close()` waits for it | correct |
+| 8 | `close()` return values: 0, -1 for a name never opened, exit status of a command, 256 + N for a signal | correct (exit status is the user decision) |
+| 9 | `close()` of a command does not flush our stdout first (mawk, onetrue-awk) | **fixed** (b59880b) |
+| 10 | At exit, commands finish before our buffered stdout is flushed (mawk, gawk) | **fixed** (b59880b) |
+| 11 | `system()` flushes our output first and returns the exit status (256 + N for a signal) | correct |
+| 12 | `fflush()` / `fflush("")` flush everything; `fflush(name)` only that output; -1 if name is not open for output | **fixed** (4f1b198) |
+| 13 | `/dev/stdout`, `/dev/stderr` as output names | correct |
+| 14 | `print > "-"` writes a file named `-` (mawk, onetrue-awk; gawk: stdout) | **fixed** (55f42ce) |
+| 15 | Empty file or command name in getline or a redirection: fatal error (onetrue-awk, gawk; mawk accepts some forms) | **fixed** (98dac34) |
+| 16 | Reader of our output goes away: die by SIGPIPE (exit 141, no message), also at the final flush | **fixed** (59869ed) |
+| 17 | Redirection target is a concatenation: `print > "a" "b"` writes `ab`; `print > $1".x"` | correct |
+| 18 | `"cmd" \| getline > 0` is `("cmd" \| getline) > 0`; `getline < "f" "1"` is `(getline < "f") "1"` (mawk, gawk) | correct |
+| 19 | `"echo " "hi" \| getline` runs `echo hi` (onetrue-awk, gawk; OVERRIDES) | correct |
+| 20 | `cmd \| getline x + 1` is `(cmd \| getline x) + 1`, also `* / % ^` (mawk, gawk) | **fixed** (0137923) |
+
+Golden category `io` (18 cases) covers items 1–14 and 17–19; items 15, 16
+and 20 are unit tests.
+
+### nextfile
+
+POSIX 2024 `nextfile` stops reading the current input file; the next
+record read is the first of the next file, with FNR back to 1 and FILENAME
+updated. Rules after the current one do not run for this record. NR counts
+only the records actually read. Implementation: the statement returns the
+`NEXTFILE` signal; the main loop calls `Interpreter.skip_file()`, which
+closes the current file (for standard input it marks the reader as at end
+of input, without draining it) and leaves the next operand to be opened
+as usual. Range patterns are not reset (they never are between files);
+getline from a separate file is unaffected; operand assignments between
+files still happen.
+
+* In BEGIN or END: a syntax error (mawk, gawk; onetrue-awk fails at run
+  time, after printing earlier output).
+* Inside a function: a syntax error (mawk, onetrue-awk; gawk allows it).
+* On standard input: a later `-` operand or `getline < "-"` finds nothing
+  (mawk, gawk; onetrue-awk carries on reading). pyawk does not drain stdin.
+
+Golden category `nextfile` (7 cases); unit tests in `tests/test_io.py` and
+`tests/test_parser.py`.
+
+### Open decisions
+
+Two-way or three-way splits where pyawk made a choice that may deserve a
+second look:
+
+* `close("/dev/stdout")` / `close("/dev/stderr")`: three different answers;
+  pyawk returns -1 (not open as a redirection) and keeps writing.
+* Several commands still open at exit: the order in which they finish is
+  nondeterministic in every awk; tests close them explicitly.
+* `getline < "-"` then `getline < "/dev/stdin"` in BEGIN with no operands:
+  mawk and gawk lose lines to their own buffering; pyawk shares one reader.
+* onetrue-awk flushes stdout before every getline; not adopted (mawk, gawk
+  do not).
+* ENVIRON values like `0x1A`: `gawk --posix` treats them as numbers, mawk
+  and onetrue-awk (and pyawk) do not.
+* `close()` of a command returns its exit status: user decision (mawk and
+  default gawk; onetrue-awk and `gawk --posix` return 0).
+* `nextfile` on stdin (above): mawk, given a large regular file as
+  stdin, continues from what it has buffered; pyawk always reads nothing.
+* `nextfile` in a function: gawk allows it; pyawk follows mawk and
+  onetrue-awk.
+* `cmd | getline x + 1` and friends: onetrue-awk differs (above).
+* Not changed, out of scope: `next` in BEGIN/END is still a run-time
+  error in pyawk (like onetrue-awk, after earlier output is printed);
+  mawk and gawk reject it at parse time, as pyawk now does for `nextfile`.
 
 ## Golden corpus and mawk
 
