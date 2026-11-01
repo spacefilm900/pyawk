@@ -266,9 +266,10 @@ class DoWhile(Stmt):
 
 @dataclass(slots=True)
 class For(Stmt):
-    init: Optional[Expr]
+    # init and step: an expression, or a print/printf/delete statement.
+    init: Optional[Expr | Stmt]
     test: Optional[Expr]
-    step: Optional[Expr]
+    step: Optional[Expr | Stmt]
     body: Stmt
 
 

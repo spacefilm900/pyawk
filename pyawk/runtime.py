@@ -1263,6 +1263,10 @@ class Interpreter:
         stream.write(text + self.str_of(self.vars["ORS"]))
 
     def _printf(self, node: ast.Printf) -> None:
+        if not node.args:
+            # A bare ``printf`` prints nothing, but still opens a redirection.
+            self._stream_for(node.redirect, node.dest)
+            return
         vals = [self.eval(a) for a in node.args]
         text = format_printf(self.str_of(vals[0]), vals[1:], self.convfmt)
         self._stream_for(node.redirect, node.dest).write(text)
@@ -1296,8 +1300,10 @@ class Interpreter:
                 break
 
     def _for(self, node: ast.For) -> None:
+        # init and step are usually expressions, but may be print, printf
+        # or delete statements (see Parser.parse_for_clause).
         if node.init is not None:
-            self.eval(node.init)
+            self._for_clause(node.init)
         while node.test is None or self.test(node.test):
             try:
                 self.execute(node.body)
@@ -1306,7 +1312,13 @@ class Interpreter:
             except _ContinueEx:
                 pass
             if node.step is not None:
-                self.eval(node.step)
+                self._for_clause(node.step)
+
+    def _for_clause(self, node: ast.Expr | ast.Stmt) -> None:
+        if isinstance(node, ast.Stmt):
+            self.execute(node)
+        else:
+            self.eval(node)
 
     def _for_in(self, node: ast.ForIn) -> None:
         arr = self.get_array(node.array)

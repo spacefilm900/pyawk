@@ -399,17 +399,32 @@ class Parser:
             array = self.name_use(self.advance())
             self.expect(")")
             return ast.ForIn(var, array, self.parse_loop_body())
-        init = None if self.at(";") else self.parse_simple_expr_stmt()
+        init = None if self.at(";") else self.parse_for_clause()
         self.expect(";")
         self.skip_newlines()
         test = None if self.at(";") else self.parse_paren_expr()
         self.expect(";")
         self.skip_newlines()
-        step = None if self.at(")") else self.parse_simple_expr_stmt()
+        step = None if self.at(")") else self.parse_for_clause()
         self.expect(")")
         return ast.For(init, test, step, self.parse_loop_body())
 
-    def parse_simple_expr_stmt(self) -> ast.Expr:
+    def parse_for_clause(self) -> ast.Expr | ast.Stmt:
+        """The init or step part of ``for (init; test; step)``.
+
+        POSIX calls these *simple statements*: usually an expression such as
+        ``i = 0`` or ``i++``, but ``print``, ``printf`` and ``delete`` are
+        allowed too (onetrue-awk and gawk accept ``for (print 9; 0;)``;
+        mawk does not).  Expressions are returned as expressions and
+        statements as statements; the runtime tells them apart.
+        """
+        if self.at("print", "printf", "delete"):
+            saved = self.no_gt
+            self.no_gt = False
+            try:
+                return self.parse_simple_statement()
+            finally:
+                self.no_gt = saved
         return self.parse_paren_expr()
 
     def parse_simple_statement(self) -> ast.Stmt:
@@ -459,7 +474,7 @@ class Parser:
         """print/printf with optional ``> file``, ``>> file`` or ``| command``."""
         kind = self.advance().type
         args: list[ast.Expr] = []
-        if not self.at(";", "NEWLINE", "}", "EOF", ">", ">>", "|"):
+        if not self.at(";", "NEWLINE", "}", "EOF", ">", ">>", "|", ")"):
             saved = self.no_gt
             self.no_gt = True
             try:
@@ -483,8 +498,8 @@ class Parser:
             finally:
                 self.no_gt = saved
         if kind == "printf":
-            if not args:
-                raise self.error("printf: no format")
+            # A bare ``printf`` (no format) prints nothing: onetrue-awk and
+            # gawk accept it, mawk rejects it.  The runtime handles args == [].
             return ast.Printf(args, redirect, dest)
         return ast.Print(args, redirect, dest)
 
@@ -540,19 +555,39 @@ class Parser:
             return ast.Cond(test, a, b)
         return test
 
+    def maybe_assign(self, operand: ast.Expr) -> ast.Expr:
+        """Turn ``operand`` into an assignment if an assignment operator follows.
+
+        Used for the right operand of ``||``, ``&&``, ``~``, ``!~`` and the
+        comparisons, where all three reference awks accept an assignment
+        without parentheses: ``gsub(/x/, "y") && $0 = $1`` means
+        ``... && ($0 = $1)``, and ``1 < x = 3`` means ``1 < (x = 3)``.
+        (Their yacc grammars have the rule ``lvalue = expr`` at the same
+        level as these operators.)  After arithmetic, concatenation or a
+        unary operator (``1 + x = 3``) it stays a syntax error, reported by
+        ``parse_expr`` when it finds the ``=``.
+        """
+        if self.tok.type in ASSIGN_OPS and isinstance(operand, ast.LVALUE_TYPES):
+            op = self.advance().type
+            self.skip_newlines()
+            value = self.parse_expr()
+            self.check_no_group(value)
+            return ast.Assign(op, operand, value)
+        return operand
+
     def parse_or(self) -> ast.Expr:
         # Left-associative levels use a loop: a || b || c -> (a || b) || c.
         left = self.parse_and()
         while self.accept("||"):
             self.skip_newlines()
-            left = ast.Or(left, self.parse_and())
+            left = ast.Or(left, self.maybe_assign(self.parse_and()))
         return left
 
     def parse_and(self) -> ast.Expr:
         left = self.parse_in()
         while self.accept("&&"):
             self.skip_newlines()
-            left = ast.And(left, self.parse_in())
+            left = ast.And(left, self.maybe_assign(self.parse_in()))
         return left
 
     def parse_in(self) -> ast.Expr:
@@ -569,7 +604,7 @@ class Parser:
         left = self.parse_comparison()
         while self.at("~", "!~"):
             negate = self.advance().type == "!~"
-            left = ast.Match(negate, left, self.parse_comparison())
+            left = ast.Match(negate, left, self.maybe_assign(self.parse_comparison()))
         return left
 
     def parse_comparison(self) -> ast.Expr:
@@ -579,7 +614,7 @@ class Parser:
         # an error).  Inside print arguments a bare '>' is left for redirection.
         if t in COMPARE_OPS and not (t == ">" and self.no_gt):
             self.advance()
-            left = ast.Compare(t, left, self.parse_pipe_getline())
+            left = ast.Compare(t, left, self.maybe_assign(self.parse_pipe_getline()))
         return left
 
     def parse_pipe_getline(self) -> ast.Expr:
@@ -589,6 +624,10 @@ class Parser:
             self.advance()
             target = self.parse_optional_lvalue()
             left = ast.Getline("cmd", target, left)
+            # ``cmd | getline x y`` is ``(cmd | getline x) y``: the result may
+            # be concatenated with what follows (all three references).
+            while self.tok.type in CONCAT_START:
+                left = ast.Concat(left, self.parse_additive())
         return left
 
     def parse_concat(self) -> ast.Expr:
@@ -663,13 +702,27 @@ class Parser:
         return None
 
     def parse_field_operand(self) -> ast.Expr:
-        """What follows ``$``: binds tightly, so ``$NF-1`` is ``($NF) - 1``
-        and ``$i++`` increments the field, not i."""
+        """What follows ``$``.  It binds tightly, so ``$NF-1`` is ``($NF) - 1``
+        and ``$i++`` increments the field, not i.  Two less obvious cases,
+        where all three references agree:
+
+        * after a unary operator the operand runs on to a unary expression,
+          increments included: ``$-i++`` is ``$(-(i++))`` and ``$-x^2`` is
+          ``$(-(x^2))``, but ``$-x*2`` is ``($(-x)) * 2``;
+        * a nested ``$`` takes a following ``++``/``--`` itself:
+          ``$$a++`` is ``$(($a)++)`` and ``$$a++++`` is ``$(($a)++)++``
+          (the outer increment is applied by parse_postfix).
+        """
         if self.at("++", "--"):
             return self.parse_postfix()
         if self.at("-", "+", "!"):
             op = self.advance().type
-            return ast.Unary(op, self.parse_field_operand())
+            return ast.Unary(op, self.parse_unary())
+        if self.accept("$"):
+            inner = ast.Field(self.parse_field_operand())
+            if self.at("++", "--"):
+                return ast.IncDec(self.advance().type, False, inner)
+            return inner
         return self.parse_primary()
 
     def parse_primary(self) -> ast.Expr:
