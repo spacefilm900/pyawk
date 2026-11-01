@@ -532,8 +532,16 @@ class IOManager:
         # output (mawk and gawk; onetrue-awk flushes stdout first).
         # list(...) takes a copy of the names, because close() removes
         # entries and Python forbids changing a dict while looping over it.
+        # A file whose last output cannot be written (a full disk, say) is
+        # remembered: its data is lost, so after everything else is closed
+        # the program ends with a write error and status 2 (all three
+        # references).  For a command, close() gives its exit status, which
+        # is not a write failure.
+        unwritten = []
         for name in list(self.outputs):
-            self.close(name)
+            is_file = self.outputs[name][1] is None
+            if self.close(name) == -1 and is_file:
+                unwritten.append(name)
         for name in list(self.inputs):
             self.close(name)
         try:
@@ -544,6 +552,8 @@ class IOManager:
             # Our last output could not be written (a full disk, say).
             # onetrue-awk and gawk report this and exit with status 2.
             raise AwkRuntimeError(f"write error on standard output ({exc.strerror})") from None
+        if unwritten:
+            raise AwkRuntimeError("write error on " + ", ".join(unwritten))
 
 
 # ---------------------------------------------------------------- interpreter

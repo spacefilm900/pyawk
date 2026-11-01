@@ -334,6 +334,28 @@ def test_close_on_a_full_disk_gives_minus_one() -> None:
     assert awk(prog) == ("-1\n", 0)
 
 
+@pytest.mark.skipif(not os.path.exists("/dev/full"), reason="needs /dev/full")
+def test_a_file_that_cannot_be_written_at_exit_is_a_write_error() -> None:
+    # Output still open at the end is closed then; if that fails, the data
+    # is lost, so the program must not end with status 0.  All three
+    # references print an error naming the file and exit with status 2.
+    res = subprocess.run(
+        [sys.executable, "-m", "pyawk", 'BEGIN { printf "x" > "/dev/full"; print "done" }'],
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+    )
+    assert res.stdout == "done\n"
+    assert "write error on /dev/full" in res.stderr
+    assert "Traceback" not in res.stderr
+    assert res.returncode == 2
+
+
+def test_a_command_failing_at_exit_is_not_a_write_error() -> None:
+    # A command's exit status is not a write failure: no error at exit.
+    assert awk('BEGIN { print "x" | "exit 3" }') == ("", 0)
+
+
 def test_close_of_a_special_name_never_opened_returns_minus_one() -> None:
     # Nothing was opened, so nothing was closed successfully (gawk).  mawk
     # and onetrue-awk close the real descriptor for /dev/stdout, and return
