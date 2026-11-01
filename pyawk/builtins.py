@@ -22,7 +22,7 @@ import subprocess
 import time
 from typing import TYPE_CHECKING, Callable
 
-from . import ast
+from . import ast, charset
 from .regex import LONG_TEXT, for_long
 from .values import UNINIT, StrNum, Value, make_strnum, special_float_str, to_num, to_str
 
@@ -45,7 +45,7 @@ if TYPE_CHECKING:  # pragma: no cover
 # are simply dropped and there are still four groups.  If no conversion
 # letter follows ("%l|"), the regex backtracks, takes "l" itself as the
 # (unknown) letter and the text is copied verbatim, as gawk does.
-_SPEC_RE = re.compile(r"%([-+ #0]*)(\*|\d+)?(?:\.(\*|\d*))?(?:[hlLqjzt]*)([a-zA-Z%])")
+_SPEC_RE = re.compile(r"%([-+ #0]*)(\*|[0-9]+)?(?:\.(\*|[0-9]*))?(?:[hlLqjzt]*)([a-zA-Z%])")
 
 
 def _to_c_int(n: float) -> int:
@@ -265,11 +265,11 @@ def format_printf(fmt: str, args: list[Value], convfmt: str = "%.6g") -> str:
                 spec = "%" + flags + (width or "") + ("." + prec if prec is not None else "")
                 out.append((spec + conv) % x)
         elif conv == "c":
-            # %c of a number is the character with that code; of a string,
-            # its first character.
+            # %c of a number is the character with that code (a byte in the
+            # C locale; see charset.char_for_code); of a string, its first
+            # character.
             if type(v) is float:
-                c = _to_c_int(v)
-                ch = chr(c) if 0 <= c < 0x110000 else ""
+                ch = charset.char_for_code(_to_c_int(v))
             else:
                 ch = to_str(v, convfmt)[:1]
             out.append(("%" + flags.replace("0", "") + (width or "") + "s") % ch)
@@ -744,12 +744,12 @@ def _srand(c: "Compiler", args: list[ast.Expr]) -> Thunk:
 
 def _tolower(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     e = c.string(args[0])
-    return lambda: e().lower()
+    return lambda: charset.lower(e())  # ASCII-only in the C locale
 
 
 def _toupper(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     e = c.string(args[0])
-    return lambda: e().upper()
+    return lambda: charset.upper(e())
 
 
 def _system(c: "Compiler", args: list[ast.Expr]) -> Thunk:
@@ -758,7 +758,7 @@ def _system(c: "Compiler", args: list[ast.Expr]) -> Thunk:
     def system() -> Value:
         cmd = sval(e())
         it.io.flush_all()
-        rc = subprocess.call(cmd, shell=True)
+        rc = subprocess.call(charset.to_os(cmd), shell=True)
         # Python reports "killed by signal N" as -N; awks report 256 + N.
         return float(rc if rc >= 0 else 256 - rc)
 

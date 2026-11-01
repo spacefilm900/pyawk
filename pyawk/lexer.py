@@ -23,7 +23,11 @@ from __future__ import annotations
 # class that is mostly a bundle of named fields; see ``Token`` below.
 from dataclasses import dataclass
 
+from . import charset
 from .errors import AwkSyntaxError
+
+# ASCII digits only: str.isdigit() would also accept "٣" or "５".
+_DIGITS = frozenset("0123456789")
 
 # ``frozenset`` is an unchangeable set: fast "is this word a keyword?" tests.
 # ``func`` (an old synonym for ``function`` that only onetrue-awk and plain
@@ -93,6 +97,10 @@ def process_escapes(s: str) -> str:
     Octal escapes take at most three digits: ``\\0101`` is ``\\010`` + ``1``.
     Any other backslash pair loses its backslash (``\\q`` is ``q``); a lone
     backslash at the very end is kept as it is.
+
+    An octal escape stands for one *byte* (charset.byte_char).  In UTF-8
+    mode, bytes that together spell a character become that character:
+    ``"\\303\\251"`` is "é", length 1, as in gawk and onetrue-awk.
     """
     if "\\" not in s:
         return s
@@ -114,8 +122,8 @@ def process_escapes(s: str) -> str:
             while j < n and j < i + 4 and s[j] in "01234567":
                 j += 1
             # ``s[a : b]`` is a slice: characters a..b-1.  int(..., 8) reads
-            # base 8; chr() turns the code number into a character.
-            out.append(chr(int(s[i + 1 : j], 8)))
+            # base 8; byte_char() turns the number into the byte's character.
+            out.append(charset.byte_char(int(s[i + 1 : j], 8)))
             i = j
         else:
             # Undefined escape such as "\q", "\&" or "\.": POSIX leaves it
@@ -125,7 +133,7 @@ def process_escapes(s: str) -> str:
             # regexes, so "a\.b" is the regex a.b.  See DESIGN.md.
             out.append(d)
             i += 2
-    return "".join(out)
+    return charset.join_bytes("".join(out))
 
 
 class Lexer:
@@ -183,9 +191,9 @@ class Lexer:
                 self._string()
             elif c == "/" and self._prev_type() not in _OPERAND_END:
                 self._regex()  # regex-vs-division decision: see _OPERAND_END
-            elif c.isdigit() or (c == "." and self.pos + 1 < n and src[self.pos + 1].isdigit()):
+            elif c in _DIGITS or (c == "." and self.pos + 1 < n and src[self.pos + 1] in _DIGITS):
                 self._number()
-            elif c.isalpha() or c == "_":
+            elif (c.isalpha() and c.isascii()) or c == "_":  # names are ASCII-only
                 self._word()
             else:
                 self._operator()
@@ -271,18 +279,18 @@ class Lexer:
         src = self.src
         i = self.pos
         n = len(src)
-        while i < n and src[i].isdigit():
+        while i < n and src[i] in _DIGITS:
             i += 1
         if i < n and src[i] == ".":
             i += 1
-            while i < n and src[i].isdigit():
+            while i < n and src[i] in _DIGITS:
                 i += 1
         if i < n and src[i] in "eE":
             j = i + 1
             if j < n and src[j] in "+-":
                 j += 1
-            if j < n and src[j].isdigit():
-                while j < n and src[j].isdigit():
+            if j < n and src[j] in _DIGITS:
+                while j < n and src[j] in _DIGITS:
                     j += 1
                 i = j
         self._emit("NUMBER", src[self.pos : i])
@@ -292,7 +300,7 @@ class Lexer:
         """Read a name and classify it: keyword, builtin, function call, variable."""
         src = self.src
         i = self.pos
-        while i < len(src) and (src[i].isalnum() or src[i] == "_"):
+        while i < len(src) and ((src[i].isalnum() and src[i].isascii()) or src[i] == "_"):
             i += 1
         word = src[self.pos : i]
         self.pos = i

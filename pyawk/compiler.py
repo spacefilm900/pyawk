@@ -74,7 +74,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any, Callable
 
-from . import ast
+from . import ast, charset
 from .builtins import BUILTINS, format_printf
 from .errors import AwkRuntimeError
 from .regex import LongestPattern, compile_span, matcher
@@ -1110,12 +1110,47 @@ class Compiler:
         nodes: list[ast.Expr] = []
         _flatten_concat(node, nodes)
         parts = [self.string(n) for n in nodes]
+        if charset.UTF8:
+            return self._concat_utf8(parts)
         if len(parts) == 2:
             a, b = parts
             return lambda: a() + b()
         # Each part is converted to a string right after it is evaluated
         # (CONVFMT could change in between), then all are joined at once.
         return lambda: "".join([p() for p in parts])
+
+    @staticmethod
+    def _concat_utf8(parts: list[Thunk]) -> Thunk:
+        """Concatenation in UTF-8 mode, where pieces may be lone bytes.
+
+        ``"\\303" "\\251"`` joins the two bytes of "é", and gawk and
+        onetrue-awk then see one character.  A piece can only complete a
+        character if it starts with a continuation byte (0x80..0xBF, held
+        as an escaped byte U+DC80..U+DCBF; see charset.py), so only then is
+        the result re-read with charset.join_bytes.
+        """
+        join_bytes = charset.join_bytes
+        if len(parts) == 2:  # the usual case, made a little faster
+            a, b = parts
+
+            def concat2() -> str:
+                x = a()
+                y = b()
+                if y and "\udc80" <= y[0] <= "\udcbf":
+                    return join_bytes(x + y)
+                return x + y
+
+            return concat2
+
+        def concat() -> str:
+            vals = [p() for p in parts]
+            text = "".join(vals)
+            for v in vals[1:]:
+                if v and "\udc80" <= v[0] <= "\udcbf":
+                    return join_bytes(text)
+            return text
+
+        return concat
 
     def _e_Binary(self, node: ast.Binary) -> Thunk:
         left = self.expr(node.left)

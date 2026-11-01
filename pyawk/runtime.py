@@ -42,17 +42,15 @@ import sys
 import threading
 from typing import IO, Any, Callable, Iterable, TypeVar
 
-from . import ast
+from . import ast, charset
 from .compiler import NEXT, NEXTFILE, CompiledProgram, Compiler, NextFromFunction
 from .errors import AwkRuntimeError
 from .lexer import process_escapes
 from .regex import LONG_TEXT, LongestPattern, compile_span, for_long
 from .values import UNINIT, StrNum, Value, make_strnum, num_to_str, to_num, to_str
 
-# Input bytes that are not valid UTF-8 are carried through unchanged
-# ("surrogateescape"), so binary-ish data is not corrupted or rejected.
-ENCODING = "utf-8"
-ERRORS = "surrogateescape"
+# How bytes become characters (and back) depends on the locale: see
+# charset.py.  Every byte sequence round-trips unchanged in both modes.
 # An operand like ``n=5`` is an assignment, not a file name.
 _ASSIGN_ARG_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _WS_FIELDS_RE = re.compile(r"[^ \t\n]+")
@@ -200,9 +198,10 @@ class RecordReader:
     def __init__(self, stream: IO[bytes], proc: subprocess.Popen[bytes] | None = None) -> None:
         self.stream = stream
         self.proc = proc
-        # An incremental decoder copes with a multi-byte UTF-8 character split
-        # across two chunks.
-        self.decoder = codecs.getincrementaldecoder(ENCODING)(errors=ERRORS)
+        # The decoder follows the locale mode (charset.py): Latin-1 in C mode,
+        # UTF-8 otherwise.  Being *incremental*, it copes with a multi-byte
+        # UTF-8 character split across two chunks.
+        self.decoder = codecs.getincrementaldecoder(charset.ENCODING)(errors=charset.ERRORS)
         self.buf = ""
         self.start = 0
         self.eof = False
@@ -390,12 +389,16 @@ class IOManager:
             if kind == "|":
                 # Flush first so our earlier output appears before the command's.
                 self.flush_all()
-                proc = subprocess.Popen(name, shell=True, stdin=subprocess.PIPE)
+                # Commands and file names go to the system as bytes
+                # (charset.to_os), so "é" means the same bytes it was read as.
+                proc = subprocess.Popen(charset.to_os(name), shell=True, stdin=subprocess.PIPE)
                 assert proc.stdin is not None
-                stream: IO[str] = io.TextIOWrapper(proc.stdin, encoding=ENCODING, errors=ERRORS, newline="")
+                stream: IO[str] = io.TextIOWrapper(
+                    proc.stdin, encoding=charset.ENCODING, errors=charset.ERRORS, newline=""
+                )
             else:
                 mode = "a" if kind == ">>" else "w"
-                stream = open(name, mode, encoding=ENCODING, errors=ERRORS, newline="")
+                stream = open(charset.to_os(name), mode, encoding=charset.ENCODING, errors=charset.ERRORS, newline="")
         except OSError as exc:
             raise AwkRuntimeError(f"can't redirect to {name} ({exc.strerror})") from None
         self.outputs[name] = (stream, proc)
@@ -410,7 +413,7 @@ class IOManager:
             self.specials_used.add(name)
             return self.get_stdin_reader()
         try:
-            reader = RecordReader(open(name, "rb"))
+            reader = RecordReader(open(charset.to_os(name), "rb"))
         except OSError:
             return None
         self.inputs[name] = reader
@@ -421,7 +424,7 @@ class IOManager:
         if reader is None:
             _check_name(cmd, "getline")
             self.flush_all()
-            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+            proc = subprocess.Popen(charset.to_os(cmd), shell=True, stdout=subprocess.PIPE)
             assert proc.stdout is not None
             reader = RecordReader(proc.stdout, proc)
             self.inputs[cmd] = reader
@@ -579,7 +582,8 @@ class Interpreter:
         self.vars["ARGC"] = float(len(operands) + 1)
         # A *dict comprehension*: builds {name: value} for every environment
         # variable, each wrapped as a strnum.
-        self.arrays["ENVIRON"] = {k: make_strnum(v) for k, v in os.environ.items()}
+        # charset.from_os re-reads each one in the current locale mode.
+        self.arrays["ENVIRON"] = {charset.from_os(k): make_strnum(charset.from_os(v)) for k, v in os.environ.items()}
 
         # Record state.  Fields are split *lazily*: reading a record only
         # stores its text, and ``fields`` stays None until a program actually
@@ -824,7 +828,7 @@ class Interpreter:
                 self.reader = self.io.get_stdin_reader()
             else:
                 try:
-                    self.reader = RecordReader(open(arg, "rb"))
+                    self.reader = RecordReader(open(charset.to_os(arg), "rb"))
                 except OSError as exc:
                     raise AwkRuntimeError(f"cannot open {arg} ({exc.strerror})") from None
             self.vars["FILENAME"] = arg

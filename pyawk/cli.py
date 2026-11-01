@@ -21,7 +21,7 @@ import sys
 import threading
 from typing import IO, Sequence
 
-from . import __version__
+from . import __version__, charset
 from .errors import AwkError
 from .parser import parse
 from .runtime import Interpreter, run_with_big_stack
@@ -85,7 +85,7 @@ def parse_args(argv: Sequence[str]) -> tuple[str, list[tuple[str, str]], list[st
             # partition("=") splits at the first "=" into three parts:
             # "x=a=b" -> ("x", "=", "a=b"); with no "=" the middle part is "".
             name, eq, value = spec.partition("=")
-            if not eq or not name.isidentifier():
+            if not eq or not (name.isidentifier() and name.isascii()):
                 raise UsageError(f"improper assignment: -v {spec}")
             assignments.append((name, value))
         elif arg.startswith("-f"):
@@ -98,11 +98,13 @@ def parse_args(argv: Sequence[str]) -> tuple[str, list[tuple[str, str]], list[st
         chunks = []
         for path in progfiles:
             try:
+                # Read raw bytes and decode them as the locale says
+                # (charset.decode), like any other input.
                 if path == "-":
-                    chunks.append(sys.stdin.read())
+                    chunks.append(charset.decode(sys.stdin.buffer.read()))
                 else:
-                    with open(path, encoding="utf-8", errors="surrogateescape") as f:
-                        chunks.append(f.read())
+                    with open(charset.to_os(path), "rb") as f:
+                        chunks.append(charset.decode(f.read()))
             except OSError as exc:
                 raise UsageError(f"couldn't open file {path}: {exc.strerror}") from None
         # Several -f files act like one program, in the order given.
@@ -121,11 +123,12 @@ def _print_version() -> int:
 
 
 def _configure_stdio() -> None:
-    """Let stdout/stderr pass through bytes that are not valid UTF-8 (the input
-    side does the same), and write "\\n" untranslated on every platform."""
+    """Make stdout/stderr encode text the way the locale mode says
+    (charset.py), so the bytes we read are the bytes we write, and write
+    "\\n" untranslated on every platform."""
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
-            stream.reconfigure(errors="surrogateescape", newline="")  # type: ignore[union-attr]
+            stream.reconfigure(encoding=charset.ENCODING, errors=charset.ERRORS, newline="")  # type: ignore[union-attr]
 
 
 def _flush_stdout_or_give_up() -> None:
@@ -146,8 +149,16 @@ def run(
     assignments: Sequence[tuple[str, str]] = (),
     stdout: IO[str] | None = None,
     stdin: IO[bytes] | None = None,
+    utf8: bool | None = None,
 ) -> int:
-    """Parse and run an AWK program (used by the CLI and in-process tests)."""
+    """Parse and run an AWK program (used by the CLI and in-process tests).
+
+    ``utf8`` chooses the locale mode (charset.py): True for UTF-8 mode,
+    False for the C locale, None to decide from LC_ALL, LC_CTYPE and LANG.
+    The mode is set before parsing, since it changes what string escapes
+    and regular expressions mean.
+    """
+    charset.set_mode(charset.locale_is_utf8() if utf8 is None else utf8)
     try:
         program = parse(source)
     except RecursionError:
@@ -171,6 +182,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     status: the program's ``exit`` code, or 2 for any error."""
     if argv is None:
         argv = sys.argv[1:]
+    # The locale decides between characters and bytes (charset.py).  Set the
+    # mode first: the arguments, the program text and all I/O depend on it.
+    charset.undo_python_locale_coercion()
+    charset.set_mode(charset.locale_is_utf8())
+    argv = [charset.from_os(a) for a in argv]
     _configure_stdio()
     try:
         source, assignments, operands = parse_args(argv)
@@ -180,7 +196,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # lexer.process_escapes on the value, so ``-F '\t'`` means a tab,
         # exactly as for -v, and an undefined escape loses its backslash
         # (``-F 'b\.c'`` is the regex b.c, as in onetrue-awk and gawk).
-        return run(source, operands, assignments)
+        return run(source, operands, assignments, utf8=charset.UTF8)
     except UsageError as exc:
         sys.stderr.write(f"pyawk: {exc}\n{USAGE}")
         return 2

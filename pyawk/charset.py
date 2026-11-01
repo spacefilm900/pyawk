@@ -65,6 +65,33 @@ def locale_is_utf8(environ: Mapping[str, str] | None = None) -> bool:
     return False
 
 
+def undo_python_locale_coercion() -> None:
+    """Put back LC_CTYPE as the user set it, if Python changed it.
+
+    When the locale is "C" (e.g. ``LANG=C`` with LC_ALL unset), Python
+    "coerces" it at startup: it sets LC_CTYPE=C.UTF-8 in its own
+    environment (PEP 538).  pyawk would then wrongly see a UTF-8 locale,
+    and so would the commands it starts.  On Linux the environment the
+    process was started with is still readable in /proc/self/environ, so
+    we restore LC_CTYPE from there.  (Elsewhere nothing is done; setting
+    LC_ALL avoids the coercion everywhere.)
+    """
+    try:
+        with open("/proc/self/environ", "rb") as f:
+            started_with = f.read().split(b"\0")
+    except OSError:
+        return
+    original = None
+    for item in started_with:
+        if item.startswith(b"LC_CTYPE="):
+            original = item[len(b"LC_CTYPE=") :]
+    if os.environb.get(b"LC_CTYPE") != original:
+        if original is None:
+            del os.environb[b"LC_CTYPE"]
+        else:
+            os.environb[b"LC_CTYPE"] = original
+
+
 def set_mode(utf8: bool) -> None:
     """Switch between UTF-8 mode (True) and C mode (False)."""
     global UTF8, ENCODING
@@ -148,12 +175,12 @@ def _unicode_case() -> tuple[dict[int, int], dict[int, int]]:
         from .unicode_tables import LOWER, UPPER
 
         def expand(runs: tuple[tuple[int, int, int, int], ...]) -> dict[int, int]:
-            table = {c: c + delta for first, last, step, delta in runs for c in range(first, last + 1, step)}
-            # gawk turns an invalid byte into U+FFFD, the replacement
-            # character, when changing case (see DESIGN.md).
-            for c in range(ESCAPED_LO, ESCAPED_HI + 1):
-                table[c] = 0xFFFD
-            return table
+            # Escaped (invalid) bytes are not in the tables, so they pass
+            # through unchanged.  gawk turns them into U+FFFD here (but not
+            # in most other functions) and onetrue-awk stops with an error;
+            # keeping the bytes is consistent with the rest of pyawk.  See
+            # DESIGN.md, "Locales and UTF-8".
+            return {c: c + delta for first, last, step, delta in runs for c in range(first, last + 1, step)}
 
         _unicode_tables = (expand(UPPER), expand(LOWER))
     return _unicode_tables
