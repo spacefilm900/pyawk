@@ -185,9 +185,10 @@ $                                   ( grouping )
   `exit` without an expression keeps an earlier exit status.
 * `IOManager` owns output files/pipes and getline sources keyed by name;
   `close()` returns the command's exit status (mawk and default gawk;
-  onetrue-awk and gawk --posix return 0, so by the majority rule this would
-  be 0 — kept as an open decision, and the gawk test close_status is
-  skipped via `REVIEWED_SKIP` in scripts/import_gawk.py). At exit, redirections are
+  onetrue-awk and gawk --posix return 0). The references split 2-2 and POSIX
+  leaves it loose, so the user chose the exit status (2026-11-01): it lets a
+  script check whether a command succeeded. The gawk test close_status stays
+  skipped via `REVIEWED_SKIP` in scripts/import_gawk.py. At exit, redirections are
   closed first and stdout flushed after (matches mawk's observable order).
 * Arithmetic: division/modulo by zero is a runtime error (like all awks);
   `%` is C `fmod`; `^` overflows to inf.
