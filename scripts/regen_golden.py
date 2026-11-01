@@ -123,6 +123,11 @@ def vote_utf8(case: harness.Case, overrides: dict[str, str]) -> int:
     """
     outputs = {name: harness.run_case(case, REFERENCES[name]).stdout for name in ("onetrue", "gawk")}
     expected = case.expected() if case.path(".out").exists() else None
+    if expected is None:
+        # Nothing recorded at all: a problem even for a hand-corrected case,
+        # whose correction lives in exactly this file.
+        print(f"MISSING {case.id}: no .out file")
+        return 1
     if case.id in overrides:
         print(f"KEEP  {case.id}: hand-corrected .out: {overrides[case.id]}")
         return 0

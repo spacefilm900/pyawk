@@ -110,6 +110,22 @@ def test_utf8_vote_follows_gawk_without_mawk(
     assert "mawk" not in ran
 
 
+def test_overridden_utf8_case_without_an_out_file_is_a_problem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A hand-corrected case needs its hand-corrected .out; without one there
+    # is no recorded answer, so the vote must not report success
+    # (CodeRabbit, PR #1).
+    regen = _load_regen()
+    missing = tmp_path / "x.out"  # never written
+    case = SimpleNamespace(id="utf8/x", path=lambda ext: missing, expected=lambda: missing.read_text())
+    monkeypatch.setattr(regen.harness, "run_case", lambda case, cmd: SimpleNamespace(stdout="gawk\n"))
+    monkeypatch.setattr(regen.harness, "read_decisions", lambda: {})
+    monkeypatch.setattr(regen.harness, "read_overrides", lambda: {"utf8/x": "pyawk's choice"})
+    assert regen.vote([case]) == 1
+    assert "no .out file" in capsys.readouterr().out
+
+
 def test_utf8_cases_are_regenerated_with_gawk() -> None:
     regen = _load_regen()
     utf8 = SimpleNamespace(id="utf8/x")
