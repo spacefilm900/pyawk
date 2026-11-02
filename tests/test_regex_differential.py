@@ -80,3 +80,34 @@ def test_fuzz_check_exit_status_reports_mismatches(
     monkeypatch.setattr(fuzz, "compare", lambda data, show, category: mismatches)
     monkeypatch.setattr(sys, "argv", ["regex_fuzz.py", "--check"])
     assert fuzz.main() == status
+
+
+def _no_references(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    for var in ("PYAWK_REF_MAWK", "PYAWK_REF_ONETRUE", "PYAWK_REF_GAWK"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))  # nothing installed
+
+
+@pytest.mark.parametrize("args", [[], ["--utf8"], ["--explain", "a+"]])
+def test_fuzz_without_the_references_is_a_clear_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str], args: list[str]
+) -> None:
+    # Regenerating (or --explain) runs the references; without them the
+    # script stops before writing anything, saying how to point at them.
+    fuzz = _load_fuzz()
+    monkeypatch.setattr(fuzz, "RESULTS", tmp_path / "results.json")
+    monkeypatch.setattr(fuzz, "UTF8_RESULTS", tmp_path / "utf8.json")
+    _no_references(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "argv", ["regex_fuzz.py", *args])
+    assert fuzz.main() == 2
+    err = capsys.readouterr().err
+    assert "PYAWK_REF_ONETRUE" in err and "PYAWK_REF_GAWK" in err
+    assert not (tmp_path / "results.json").exists() and not (tmp_path / "utf8.json").exists()
+
+
+def test_fuzz_check_needs_no_references(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    fuzz = _load_fuzz()
+    _no_references(monkeypatch, tmp_path)
+    monkeypatch.setattr(fuzz, "compare", lambda data, show, category: 0)
+    monkeypatch.setattr(sys, "argv", ["regex_fuzz.py", "--check"])
+    assert fuzz.main() == 0

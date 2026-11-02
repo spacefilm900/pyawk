@@ -34,6 +34,10 @@ recorded (the project follows POSIX or gawk on UTF-8 questions; see
 DESIGN.md, "Locale"), and the line lists onetrue under ``outvoted``.
 ``regex_corpus.UTF8_OVERRIDES`` records exceptions.
 
+The references are found through PYAWK_REF_MAWK, PYAWK_REF_ONETRUE and
+PYAWK_REF_GAWK, or else on PATH (see awk_tests/references.py); ``--check``
+needs none of them.
+
 ``--show N`` prints the first N mismatching lines with the three
 references' answers next to pyawk's.
 """
@@ -52,16 +56,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "awk_tests"))
+import references  # noqa: E402
 import regex_corpus as rc  # noqa: E402
 
 RESULTS = ROOT / "awk_tests" / "regex_differential.json"
 UTF8_RESULTS = ROOT / "awk_tests" / "regex_differential_utf8.json"
 
-REFERENCES = {
-    "mawk": ["/usr/bin/mawk"],
-    "onetrue": ["/workspace/refs/onetrue-awk/a.out"],
-    "gawk": ["/workspace/refs/local/bin/gawk", "--posix"],
-}
+# The three reference awks (found by awk_tests/references.py).
+REFERENCES = ("mawk", "onetrue", "gawk")
 
 
 # The references for the UTF-8 corpus, and the one that settles a split.
@@ -98,11 +100,15 @@ def split_lines(out: str, entry: rc.Entry) -> list[str]:
 
 def regenerate(entries: list[rc.Entry], jobs: int, utf8: bool = False) -> dict:
     # Which references vote, and how a split is settled (see the docstring).
-    voters = UTF8_REFERENCES if utf8 else tuple(REFERENCES)
+    voters = UTF8_REFERENCES if utf8 else REFERENCES
     overrides = rc.UTF8_OVERRIDES if utf8 else rc.OVERRIDES
 
+    # Find the voters first: a missing one stops the run here, before any
+    # work (raises references.MissingReference).
+    commands = references.commands(voters)
+
     def answers(entry: rc.Entry) -> dict[str, list[str]]:
-        return {name: run_reference(REFERENCES[name], entry) for name in voters}
+        return {name: run_reference(commands[name], entry) for name in voters}
 
     with ThreadPoolExecutor(jobs) as pool:
         all_answers = list(pool.map(answers, entries))
@@ -184,8 +190,9 @@ def compare(data: dict, show: int, category: str | None) -> int:
 
 def explain(entry: rc.Entry) -> None:
     """Print each reference's and pyawk's answer for one pattern, per input."""
-    voters = UTF8_REFERENCES if entry.utf8 else tuple(REFERENCES)
-    answers = {name: run_reference(REFERENCES[name], entry) for name in voters}
+    voters = UTF8_REFERENCES if entry.utf8 else REFERENCES
+    commands = references.commands(voters)
+    answers = {name: run_reference(commands[name], entry) for name in voters}
     answers["pyawk"] = split_lines(rc.run_pyawk(entry), entry)
     print("columns: RSTART RLENGTH ~ gsub-count gsub-result split-count:pieces")
     for i, inp in enumerate(entry.inputs):
@@ -259,6 +266,15 @@ def main() -> int:
     args = ap.parse_args()
     if args.verify_safety is not None:
         return 1 if verify_safety(args.verify_safety) else 0
+    try:
+        return run(args)
+    except references.MissingReference as exc:
+        print(f"regex_fuzz: {exc}", file=sys.stderr)
+        return 2
+
+
+def run(args: argparse.Namespace) -> int:
+    """main's work, once the options are read."""
     if args.explain is not None:
         inputs = tuple(args.inputs.split(",")) if args.inputs is not None else rc.ABC_INPUTS
         explain(rc.Entry("utf8-explain" if args.utf8 else "explain", args.explain, inputs))
