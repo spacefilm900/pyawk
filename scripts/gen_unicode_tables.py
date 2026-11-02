@@ -108,7 +108,9 @@ def ask_gawk(gawk: str) -> tuple[dict[str, list[int]], dict[int, int], dict[int,
         flags = (t / "flags").read_bytes().split(b"\n")[:-1]
         upper = (t / "upper").read_bytes().split(b"\n")[:-1]
         lower = (t / "lower").read_bytes().split(b"\n")[:-1]
-        version = subprocess.run([gawk, "--version"], capture_output=True, text=True).stdout.splitlines()[0]
+        version = subprocess.run(
+            [gawk, "--version"], capture_output=True, encoding="utf-8", errors="replace"
+        ).stdout.splitlines()[0]
     assert len(flags) == len(upper) == len(lower) == len(CODE_POINTS), "gawk output out of step"
     members: dict[str, list[int]] = {name: [] for name in CLASSES}
     for c, f in zip(CODE_POINTS, flags):
@@ -180,10 +182,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"gen_unicode_tables: cannot run {gawk}: {exc}", file=sys.stderr)
         return 2
     if args.check:
-        same = OUT.exists() and OUT.read_text() == text
+        same = OUT.exists() and OUT.read_text(encoding="utf-8") == text
         print("unicode_tables.py is up to date" if same else "unicode_tables.py differs from a fresh run")
         return 0 if same else 1
-    OUT.write_text(text)
+    # Written and compared as UTF-8 whatever the locale, so --check and
+    # the write agree everywhere (the module is ASCII unless gawk's
+    # version line is not).
+    OUT.write_text(text, encoding="utf-8")
     print(f"wrote {OUT.relative_to(ROOT)} ({len(text)} bytes)")
     return 0
 

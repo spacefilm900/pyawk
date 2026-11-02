@@ -44,3 +44,40 @@ def test_missing_gawk_is_a_clear_error(tmp_path: Path, capsys: pytest.CaptureFix
     mod = _load()
     assert mod.main(["--gawk", str(tmp_path / "no-such-gawk"), "--check"]) == 2
     assert "cannot run" in capsys.readouterr().err
+
+
+# The module is written and compared as UTF-8 whatever the locale says
+# (CodeRabbit, PR #1).  It is ASCII today, but gawk's version line goes into
+# it; with the platform's default codec a non-ASCII character there would
+# fail to write (or compare differently) in an ASCII locale.  The child runs
+# in such a locale: C, with Python's UTF-8 mode and locale coercion off.
+_CHILD = """
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("g", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+g.OUT = Path(sys.argv[2])
+g.ROOT = g.OUT.parent
+g.ask_gawk = lambda gawk: ()
+g.render = lambda: "# gawk 5.4 \\u00e9dition\\n"
+assert g.main(["--gawk", "x"]) == 0
+assert g.main(["--gawk", "x", "--check"]) == 0
+"""
+
+
+def test_module_is_written_and_checked_as_utf8_in_an_ascii_locale(tmp_path: Path) -> None:
+    import os
+    import subprocess
+    import sys
+
+    out = tmp_path / "unicode_tables.py"
+    env = dict(os.environ, LC_ALL="C", PYTHONUTF8="0", PYTHONCOERCECLOCALE="0")
+    res = subprocess.run(
+        [sys.executable, "-c", _CHILD, str(REPO / "scripts" / "gen_unicode_tables.py"), str(out)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, res.stderr
+    assert out.read_bytes() == "# gawk 5.4 \u00e9dition\n".encode("utf-8")
