@@ -47,9 +47,46 @@ choices are listed in DESIGN.md ("User-defined functions").
 ```sh
 .venv/bin/python -m pytest -q          # unit tests + every golden case
 scripts/run_golden.py [--diff] [-v]    # pass/fail summary per category
-scripts/regen_golden.py [--check]      # regenerate (or verify) .out with /usr/bin/mawk
-scripts/regen_golden.py --awk gawk  # use another reference awk
+scripts/regen_golden.py [--check]      # regenerate (or verify) .out with mawk (gawk for utf8)
+scripts/regen_golden.py --awk 'gawk --posix'  # use another awk instead
 ```
+
+### Pointing the tools at the reference awks
+
+pytest itself needs no other awk: the golden `.out` files and the regex
+differential records are committed. The tools that run the three
+reference awks (`regen_golden.py`, `regex_fuzz.py` without `--check`, the
+import scripts, `bench.py`, `gen_unicode_tables.py`) and a few smoke tests
+in `tests/test_references.py` find them like this:
+
+| reference | environment variable | else on PATH as |
+|---|---|---|
+| mawk | `PYAWK_REF_MAWK` | `mawk` |
+| onetrue-awk (BWK awk) | `PYAWK_REF_ONETRUE` | `original-awk`, `onetrue-awk` or `bwk-awk` |
+| gawk (run as `gawk --posix`) | `PYAWK_REF_GAWK` | `gawk` |
+
+A variable holds a program path (`./a.out` is fine) or a name to look up
+on PATH. Plain `awk` is never used, since it is a different awk on
+different systems. A variable that names nothing runnable is an error, not
+a fallback. A tool that needs a missing reference stops with exit status 2
+and says which variable to set, before it writes anything. The smoke tests
+are skipped with that same message. The import scripts also need the
+upstream test suites: `PYAWK_REF_ONETRUE_TESTDIR` (onetrue-awk's
+`testdir/`, by default the one beside the onetrue program) and
+`PYAWK_REF_GAWK_TESTDIR` (`test/` in the gawk 5.4.1 source tree), or
+`--src DIR`.
+
+```sh
+export PYAWK_REF_ONETRUE=$HOME/src/onetrue-awk/a.out
+export PYAWK_REF_GAWK=$HOME/gawk-5.4.1/bin/gawk
+export PYAWK_REF_GAWK_TESTDIR=$HOME/src/gawk-5.4.1/test
+.venv/bin/python -m pytest -q -rs tests/test_references.py   # check: no skips
+scripts/regen_golden.py --check
+```
+
+The variables start with `PYAWK_REF_`, not `PYAWK_T_`: the golden-case
+harness removes inherited `PYAWK_T_*` variables (they belong to the
+`ENVIRON` cases) before it runs an awk.
 
 Golden cases live in `awk_tests/golden/<category>/NAME.{awk,in,out[,args]}`
 and run as `awk [args] -f NAME.awk NAME.in` in a throwaway copy of the
@@ -77,7 +114,7 @@ list to be updated) and `scripts/run_golden.py --write-known-failures`
 regenerates it.
 
 ```sh
-scripts/import_onetrue.py   # re-import (needs /workspace/refs/onetrue-awk/a.out, mawk, gawk)
+scripts/import_onetrue.py   # re-import (needs the three awks and onetrue-awk's testdir/)
 scripts/run_golden.py onetrue --diff
 ```
 
@@ -95,7 +132,7 @@ Cases fed on standard input have a `NAME.stdin` file. `KNOWN_FAILURES`
 works as for the onetrue suite.
 
 ```sh
-scripts/import_gawk.py      # re-import (needs /workspace/refs/src/gawk-5.4.1/test, the three awks)
+scripts/import_gawk.py      # re-import (needs the three awks and gawk-5.4.1/test)
 scripts/run_golden.py gawk --diff
 ```
 
@@ -153,7 +190,7 @@ Rules, overrides and the decisions on constructs POSIX leaves undefined are in D
 .venv/bin/python scripts/bench.py --save baseline     # store a run in .bench/
 .venv/bin/python scripts/bench.py --compare baseline  # add a speedup column
 .venv/bin/python scripts/bench.py --only funcs --awks pyawk,mawk
-.venv/bin/python scripts/bench.py --path onetrue=/path/to/a.out  # an awk not on PATH
+.venv/bin/python scripts/bench.py --path onetrue=/path/to/a.out  # this run only (or PYAWK_REF_ONETRUE)
 .venv/bin/python scripts/bench.py --locale C.UTF-8    # time UTF-8 mode (default LC_ALL=C)
 ```
 

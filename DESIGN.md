@@ -630,9 +630,10 @@ previous match (`gsub(/x*/, "-", "abxd")` → `-a-b-d-`).
 generated, seeded 200 000-line input with pyawk, mawk, `gawk --posix` and
 onetrue-awk, keeps the best of three wall-clock runs and checks every
 output against mawk's (or, without mawk, the first reference awk found).
-The reference awks are looked up by name on PATH (`mawk`, `gawk`, and
-`original-awk`/`onetrue-awk`/`bwk-awk`); only those found are timed, and
-`--path NAME=PROGRAM` points at one that is not on PATH. `--save LABEL`
+The reference awks are found as in all the tooling (`awk_tests/references.py`:
+a `PYAWK_REF_MAWK` / `PYAWK_REF_ONETRUE` / `PYAWK_REF_GAWK` variable, else
+`mawk`, `gawk`, and `original-awk`/`onetrue-awk`/`bwk-awk` on PATH); only
+those found are timed, and `--path NAME=PROGRAM` overrides either for one run. `--save LABEL`
 stores a run in `.bench/` (ignored by git) and `--compare LABEL` adds a
 speedup column against a saved run.
 
@@ -844,6 +845,16 @@ the majority wins; the splits are recorded under "I/O decisions".
   the environment), `NAME.operands` (the operands to use instead of
   `NAME.in`; may name other cases' `.in` files and `-`), `NAME.stdin`
   (standard input). `scripts/make_corpus.py` writes them all.
+* **Where the reference awks are.** `awk_tests/references.py` is the one
+  place that finds them, for every tool and test: a `PYAWK_REF_MAWK`,
+  `PYAWK_REF_ONETRUE` or `PYAWK_REF_GAWK` variable, else the usual names on
+  PATH (never plain `awk`). There is deliberately no built-in default path:
+  a path that exists only on the author's machine would make the tools
+  behave differently elsewhere. A variable that names nothing is an error,
+  not a fallback. A missing reference stops a tool (exit 2) before it
+  writes anything, and the tests that need one are skipped with the
+  reason. README.md ("Pointing the tools at the reference awks") has the
+  details.
 * **`regen_golden.py --vote CAT/NAME...`** runs the named cases under all
   three references and reports which agree with the `.out` (OK), which
   case has no majority, and which is DECIDED.
