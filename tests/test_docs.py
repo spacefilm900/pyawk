@@ -33,3 +33,17 @@ def test_table_rows_have_as_many_cells_as_their_header(doc: str) -> None:
         elif _cells(line) != header_cells:
             bad.append(f"{doc}:{number}: {line}")
     assert bad == []
+
+
+@pytest.mark.parametrize("doc", ["DESIGN.md", "README.md"])
+def test_reference_rules_name_the_benchmark_exception(doc: str) -> None:
+    """CodeRabbit round 5: by default scripts/bench.py does not stop on a
+    missing reference or a PYAWK_REF_* variable that names nothing; it warns
+    and times the awks it has.  It stops (exit 2) only when --awks names an
+    awk it cannot find.  The docs' reference rules must say so."""
+    text = " ".join((REPO / doc).read_text().split())  # join wrapped lines
+    start = text.index("names nothing")
+    passage = text[start:start + 700]
+    assert "scripts/bench.py" in passage
+    assert "warns" in passage
+    assert "--awks" in passage

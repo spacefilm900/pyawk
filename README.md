@@ -70,7 +70,11 @@ on PATH. Plain `awk` is never used, since it is a different awk on
 different systems. A variable that names nothing runnable is an error, not
 a fallback. A tool that needs a missing reference stops with exit status 2
 and says which variable to set, before it writes anything. The smoke tests
-are skipped with that same message. The import scripts also need the
+are skipped with that same message. The one exception is
+`scripts/bench.py`, which times whichever awks it has: it warns about a
+missing reference or a variable that names nothing and carries on without
+that awk. It stops (exit status 2) only when `--awks` names an awk it
+cannot find. The import scripts also need the
 upstream test suites: `PYAWK_REF_ONETRUE_TESTDIR` (onetrue-awk's
 `testdir/`, by default the one beside the onetrue program) and
 `PYAWK_REF_GAWK_TESTDIR` (`test/` in the gawk 5.4.1 source tree), or
@@ -142,7 +146,7 @@ As of 2026-11-02 (`.venv/bin/python -m pytest -q` with the three reference awks 
 
 | suite | pass | fail | skip |
 |---|---|---|---|
-| pytest (all) | 1967 | 0 | 122 |
+| pytest (all) | 1969 | 0 | 122 |
 | own golden corpus (incl. regex_posix 8, utf8 17) | 154 | 0 | 0 |
 | imported onetrue-awk | 215 | 0 | 9 |
 | imported gawk | 192 | 0 | 112 |

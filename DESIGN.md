@@ -810,7 +810,7 @@ and new code: regex 0.565 / 0.565–0.570 s, gsub 0.829–0.841 /
 
 ## Test status
 
-pytest: 1967 passed, 122 skipped (4 more skips without the reference awks). Golden summaries: own corpus 154/154
+pytest: 1969 passed, 122 skipped (4 more skips without the reference awks). Golden summaries: own corpus 154/154
 (nine v1.0 categories with 99 cases, plus environ 5, io 18, nextfile 7,
 regex_posix 8 and utf8 17), onetrue-awk 215 pass / 9 skip, gawk 192 pass /
 112 skip, no failures and empty `KNOWN_FAILURES` lists (2026-11-02,
@@ -865,7 +865,10 @@ the majority wins; the splits are recorded under "I/O decisions".
   behave differently elsewhere. A variable that names nothing is an error,
   not a fallback. A missing reference stops a tool (exit 2) before it
   writes anything, and the tests that need one are skipped with the
-  reason. README.md ("Pointing the tools at the reference awks") has the
+  reason. The exception is `scripts/bench.py`, which only compares speeds:
+  by default it warns about a missing reference or a variable that names
+  nothing and times the awks it has; it stops (exit 2) only when `--awks`
+  names an awk it cannot find. README.md ("Pointing the tools at the reference awks") has the
   details.
 * **`regen_golden.py --vote CAT/NAME...`** runs the named cases under all
   three references and reports which agree with the `.out` (OK), which
