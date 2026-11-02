@@ -22,6 +22,14 @@ sys.modules["bench"] = bench  # @dataclass looks the module up by name
 _spec.loader.exec_module(bench)
 
 
+@pytest.fixture(autouse=True)
+def no_reference_variables(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The PYAWK_REF_* variables of whoever runs the tests must not change
+    # what these tests see; the tests that need one set it themselves.
+    for var in ("PYAWK_REF_MAWK", "PYAWK_REF_ONETRUE", "PYAWK_REF_GAWK"):
+        monkeypatch.delenv(var, raising=False)
+
+
 def fake_which(installed: dict[str, str]):
     """A stand-in for shutil.which that knows only the given programs."""
     return lambda name: installed.get(name)
@@ -80,3 +88,24 @@ def test_locale_is_passed_to_the_awks(locale: str) -> None:
     assert out == locale.encode()
     _, out = bench.time_one(["sh", "-c", 'printf %s "$LC_ALL"'], runs=1)
     assert out == b"C"
+
+
+def test_reference_variables_choose_the_awks(monkeypatch: pytest.MonkeyPatch) -> None:
+    # PYAWK_REF_* (see awk_tests/references.py) wins over PATH, as in the
+    # rest of the tooling; --path still wins over both.
+    monkeypatch.setattr(shutil, "which", fake_which({"gawk": "/usr/bin/gawk", "/opt/gawk": "/opt/gawk",
+                                                     "/opt/mawk": "/opt/mawk"}))
+    monkeypatch.setenv("PYAWK_REF_GAWK", "/opt/gawk")
+    monkeypatch.setenv("PYAWK_REF_MAWK", "/opt/mawk")
+    awks = bench.find_awks({"mawk": "/x/mawk"})
+    assert awks["gawk"] == ["/opt/gawk", "--posix"]
+    assert awks["mawk"] == ["/x/mawk"]
+
+
+def test_a_bad_reference_variable_is_reported_and_left_out(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(shutil, "which", fake_which({"gawk": "/usr/bin/gawk"}))
+    monkeypatch.setenv("PYAWK_REF_GAWK", "/no/such/gawk")
+    assert "gawk" not in bench.find_awks({})
+    assert "PYAWK_REF_GAWK=/no/such/gawk" in capsys.readouterr().err

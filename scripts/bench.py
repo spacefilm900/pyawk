@@ -38,7 +38,6 @@ import argparse
 import json
 import os
 import random
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -51,17 +50,15 @@ CACHE = REPO / ".bench"
 # Bump this when the generator below changes, so cached inputs are rebuilt.
 GENERATOR_VERSION = 1
 
-# The awks we know how to time.  For each reference awk: the program names
-# to look for on PATH (first found wins) and extra options to pass.  Plain
-# "awk" is deliberately not in any list: it may be mawk, gawk or BWK awk
-# depending on the system (on macOS it is BWK awk), so results labelled
-# "mawk" could silently be about another awk.
-REFERENCE_AWKS: dict[str, tuple[list[str], list[str]]] = {
-    "mawk": (["mawk"], []),
-    "gawk": (["gawk"], ["--posix"]),
-    # onetrue-awk (BWK awk) is packaged under several names.
-    "onetrue": (["original-awk", "onetrue-awk", "bwk-awk"], []),
-}
+# Make awk_tests/ importable: references.py knows where the reference
+# awks are (PYAWK_REF_* variables, then their usual names on PATH; plain
+# "awk" is never used, since it may be any of them).
+sys.path.insert(0, str(REPO / "awk_tests"))
+import references  # noqa: E402
+
+# The reference awks we know how to time, in table order, with the
+# options each one runs with (gawk in its POSIX mode).
+REFERENCE_AWKS: dict[str, list[str]] = {name: references.OPTIONS[name] for name in ("mawk", "gawk", "onetrue")}
 
 
 def find_awks(paths: dict[str, str]) -> dict[str, list[str]]:
@@ -69,11 +66,11 @@ def find_awks(paths: dict[str, str]) -> dict[str, list[str]]:
 
     ``paths`` gives explicit locations (from ``--path NAME=PROGRAM``), e.g.
     an awk built from source that is not on PATH; the others are looked up
-    by name with ``shutil.which`` (the same search the shell does).  Awks
-    that are not found are simply left out.
+    through awk_tests/references.py (a PYAWK_REF_* variable, else the
+    usual names on PATH).  Awks that are not found are simply left out.
     """
     awks = {"pyawk": [sys.executable, "-m", "pyawk"]}
-    for name, (candidates, options) in REFERENCE_AWKS.items():
+    for name, options in REFERENCE_AWKS.items():
         if name in paths:
             found: str | None = paths[name]
             # The awks are run with the repository as their working
@@ -84,9 +81,14 @@ def find_awks(paths: dict[str, str]) -> dict[str, list[str]]:
             if found and os.sep in found and not os.path.isabs(found):
                 found = os.path.abspath(found)
         else:
-            # ``next(..., None)``: the first candidate that is installed,
-            # or None if none is.
-            found = next((p for p in map(shutil.which, candidates) if p), None)
+            try:
+                found = references.program(name)
+            except references.MissingReference as exc:
+                # Not installed: simply not timed.  But a PYAWK_REF_*
+                # variable that names nothing is a mistake worth a word.
+                if os.environ.get(references.ENV_VARS[name]):
+                    print(f"bench: {exc}; not timing {name}", file=sys.stderr)
+                found = None
         if found:
             awks[name] = [found] + options
     return awks

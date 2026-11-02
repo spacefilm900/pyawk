@@ -30,12 +30,25 @@ def _fake_gawk(directory: Path) -> Path:
 # The default gawk is the one on PATH, not a path that exists only on the
 # machine the script was written on (CodeRabbit, PR #1); --gawk overrides it.
 def test_default_gawk_is_the_one_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PYAWK_REF_GAWK", raising=False)
     exe = _fake_gawk(tmp_path)
     monkeypatch.setenv("PATH", str(tmp_path))
     assert _load().default_gawk() == str(exe)
 
 
+def test_default_gawk_is_the_reference_gawk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # PYAWK_REF_GAWK names the reference gawk for all the tooling.
+    _fake_gawk(tmp_path)
+    mine = tmp_path / "mine"
+    mine.mkdir()
+    exe = _fake_gawk(mine)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("PYAWK_REF_GAWK", str(exe))
+    assert _load().default_gawk() == str(exe)
+
+
 def test_default_gawk_without_one_on_path_is_the_plain_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PYAWK_REF_GAWK", raising=False)
     monkeypatch.setenv("PATH", str(tmp_path))  # an empty directory
     assert _load().default_gawk() == "gawk"
 

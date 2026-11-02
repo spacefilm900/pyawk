@@ -3,7 +3,8 @@
 
 usage: scripts/gen_unicode_tables.py [--gawk PATH] [--check]
 
-The gawk used is the one on PATH unless --gawk names another.  The tables
+The gawk used is $PYAWK_REF_GAWK, else the one on PATH, unless --gawk
+names another.  The tables
 depend on the gawk and C library versions (the module records gawk's), so
 --check passes only with the same ones; the committed module came from
 GNU Awk 5.4.1 with glibc's C.UTF-8 locale.
@@ -27,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,6 +35,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "pyawk" / "unicode_tables.py"
+
+# awk_tests/references.py says where the reference gawk is.
+sys.path.insert(0, str(ROOT / "awk_tests"))
+import references  # noqa: E402
 CLASSES = ["alpha", "digit", "alnum", "upper", "lower", "space", "blank", "punct", "xdigit", "cntrl", "print", "graph"]
 
 # Every code point we ask about: all scalar values except "\n" (it ends a
@@ -165,8 +169,12 @@ def render(members, upper, lower, version: str) -> str:
 
 
 def default_gawk() -> str:
-    """The gawk found on PATH (or just "gawk", to fail with a clear message)."""
-    return shutil.which("gawk") or "gawk"
+    """The reference gawk: $PYAWK_REF_GAWK, else the gawk on PATH (see
+    awk_tests/references.py); or just "gawk", to fail with a clear message."""
+    try:
+        return references.program("gawk")
+    except references.MissingReference:
+        return os.environ.get("PYAWK_REF_GAWK") or "gawk"
 
 
 def main(argv: list[str] | None = None) -> int:
