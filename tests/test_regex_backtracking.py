@@ -274,3 +274,53 @@ def test_probing_falls_back_to_one_pass() -> None:
     seconds, out = timed("a*(a*)*b|c", "a" * 100_000 + "c")
     assert out == ["100001 1 1 1 1 2", "2"]
     assert seconds < 5.0
+
+
+def test_compile_cache_bounds_the_automaton_states_it_keeps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cache of compiled regexes must not keep unlimited automata
+    (CodeRabbit, PR #1, security review).
+
+    Each pattern may need up to NFA_LIMIT states, and a dynamic regex
+    taken from the input can be a different big pattern on every line.
+    The cache used to keep 512 of them whatever their size: patterns like
+    ``(a|b{0,1000}){0,400}`` (800 000 states, about 48 MB each) could fill
+    many gigabytes.  The cache now drops its oldest entries
+    once the states it keeps pass CACHE_STATE_LIMIT.  Here the limit is
+    made small, and twenty patterns of about 20 000 states each are
+    compiled: the states still alive afterwards must stay within the limit
+    plus the newest pattern."""
+    import gc
+
+    from pyawk import regex
+
+    def live_states() -> int:
+        gc.collect()
+        return sum(len(o.kind) for o in gc.get_objects() if type(o) is regex._NFA)
+
+    regex._compile.cache_clear()
+    monkeypatch.setattr(regex, "CACHE_STATE_LIMIT", 50_000, raising=False)
+    try:
+        before = live_states()
+        sizes = []
+        for i in range(20):
+            ere = f"(a|b{{0,100}}){{0,{95 + i}}}"
+            sizes.append(regex._nfa_size(parse(ere)))
+            assert compile_span(ere).search("ab" * 20) is not None
+        assert live_states() - before <= 50_000 + max(sizes)
+        # The newest pattern is kept, so using it again costs nothing.
+        assert compile_span(ere) is compile_span(ere)
+    finally:
+        regex._compile.cache_clear()
+
+
+def test_compile_cache_still_keeps_small_patterns() -> None:
+    """Small patterns cost almost nothing, so hundreds of them stay cached
+    (the old 512-entry limit), and a repeated one is not recompiled."""
+    from pyawk import regex
+
+    regex._compile.cache_clear()
+    try:
+        first = [compile_ere(f"x{i}y") for i in range(500)]
+        assert all(compile_ere(f"x{i}y") is p for i, p in enumerate(first))
+    finally:
+        regex._compile.cache_clear()

@@ -478,6 +478,18 @@ The reference awks use automata and answer at once. pyawk now does too:
   states) took 1 GB and 3 s, and with 1000s it exhausted memory. That is a
   deliberate difference: gawk and mawk accept such patterns, given the
   memory (CodeRabbit, PR #1).
+* The cache of compiled regexes is limited by size as well as count.
+  Each pattern passes the limit above on its own, but a dynamic regex
+  from the input can be a different big pattern on every line:
+  `(a|b{0,1000}){0,400}` needs 800 000 states (about 48 MB), and the
+  cache used to keep 512 patterns whatever their size (1.4 GB after 30
+  such patterns, and still growing). Now the oldest entries are dropped
+  once the cached automata pass `CACHE_STATE_LIMIT` = `NFA_LIMIT` states
+  in all; the newest pattern is always kept. The same 30 patterns stay
+  under 200 MB. The cache still holds up to 512 small patterns. It drops
+  the oldest entry first, not the least recently used one, so that a
+  lookup costs no more than before (each place in the program also keeps
+  its own last pattern). Raised by CodeRabbit's security review, PR #1.
 
 After the change every one of those cases (`~`, `match`, `sub`, `gsub`,
 `split` and FS) takes at most a few milliseconds on 30 characters and stays

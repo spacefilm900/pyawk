@@ -86,7 +86,6 @@ import re
 import weakref
 from bisect import bisect_right
 from collections.abc import Callable, Iterator
-from functools import lru_cache
 from typing import Literal
 
 from . import charset
@@ -1348,10 +1347,20 @@ _TWINS: weakref.WeakKeyDictionary[re.Pattern[str], object] = weakref.WeakKeyDict
 Pattern = re.Pattern[str] | LongestPattern
 
 
-# ``@lru_cache`` remembers results: compiling the same regex text again (e.g.
-# a pattern tested on every input line) returns the cached compiled pattern.
-@lru_cache(maxsize=512)
-def _compile(ere: str) -> tuple[Pattern, Pattern]:
+# The cache of compiled regexes (below) keeps at most CACHE_ENTRIES
+# patterns, and drops the least recently used ones sooner if the automata
+# it keeps would need more than CACHE_STATE_LIMIT states in all.  Without
+# the second limit a dynamic regex taken from the input could be a
+# different big pattern on every line (each one allowed: up to NFA_LIMIT
+# states, tens of megabytes), and 512 of them would fill many gigabytes.
+# The newest pattern is always kept, whatever its size.
+CACHE_ENTRIES = 512
+CACHE_STATE_LIMIT = NFA_LIMIT
+
+
+def _compile_uncached(ere: str) -> tuple[tuple[Pattern, Pattern], int]:
+    """Compile ``ere``; return (the yes/no pattern, the span pattern) and
+    the number of automaton states they may build (0 if none)."""
     tree = parse(ere)
     try:
         py = re.compile(_emit(tree), re.DOTALL)
@@ -1359,10 +1368,65 @@ def _compile(ere: str) -> tuple[Pattern, Pattern]:
         raise AwkRuntimeError(f"bad regular expression /{ere}/: {exc}") from None
     if not _backtrack_safe(tree):
         lp = LongestPattern(tree, None)
-        return lp, lp
+        return (lp, lp), _nfa_size(tree)
+    states = 0
     if _has_variable(tree):
+        # for_long may build an automata-only twin later; count it now.
         _TWINS[py] = tree
-    return py, (py if _safe(tree) else LongestPattern(tree, py))
+        states = _nfa_size(tree)
+    if _safe(tree):
+        return (py, py), states
+    return (py, LongestPattern(tree, py)), _nfa_size(tree)
+
+
+class _CompileCache:
+    """Remembers compiled regexes: compiling the same regex text again
+    (e.g. a pattern tested on every input line) returns the same objects.
+
+    Limited by the automaton states the entries hold as well as by their
+    number (see CACHE_STATE_LIMIT).  The entries are kept in a dict, which
+    remembers the order they were added in: ``self.entries[ere] =
+    (result, states)``.  When it is full the oldest entries go first.
+    (Not the least recently *used*, as ``functools.lru_cache`` would do:
+    that costs a reordering on every hit, and this lookup runs for every
+    dynamic regex on every line.  Each place in the program keeps its own
+    last pattern anyway, see compiler.py.)
+    """
+
+    def __init__(self) -> None:
+        self.entries: dict[str, tuple[tuple[Pattern, Pattern], int]] = {}
+        self.states = 0  # the sum of the entries' state counts
+
+    def __call__(self, ere: str) -> tuple[Pattern, Pattern]:
+        hit = self.entries.get(ere)
+        if hit is not None:
+            return hit[0]
+        return self.add(ere)
+
+    def add(self, ere: str) -> tuple[Pattern, Pattern]:
+        """Compile ``ere`` (not in the cache) and cache it."""
+        hit = _compile_uncached(ere)
+        entries = self.entries
+        self.states += hit[1]
+        # Drop the oldest entries (the first in the dict) until both
+        # limits hold for what remains besides the new one.
+        while entries and (len(entries) >= CACHE_ENTRIES or self.states - hit[1] > CACHE_STATE_LIMIT):
+            oldest = next(iter(entries))
+            self.states -= entries.pop(oldest)[1]
+        entries[ere] = hit
+        return hit[0]
+
+    def cache_clear(self) -> None:
+        self.entries.clear()
+        self.states = 0
+
+
+_compile = _CompileCache()
+# compile_ere and compile_span look in the dict themselves: they run for
+# every dynamic regex on every line, and a method call would cost more
+# than the lookup.  (cache_clear empties this same dict.)
+_CACHED = _compile.entries
+_compile_add = _compile.add
 
 
 # The same regex text means different things in the two locale modes (what
@@ -1376,12 +1440,14 @@ def compile_ere(ere: str) -> Pattern:
 
     A bad regex is a runtime error, since it may be built at run time.
     """
-    return _compile(ere)[0]
+    hit = _CACHED.get(ere)
+    return hit[0][0] if hit is not None else _compile_add(ere)[0]
 
 
 def compile_span(ere: str) -> Pattern:
     """Compile an AWK ERE for uses where the match's extent matters."""
-    return _compile(ere)[1]
+    hit = _CACHED.get(ere)
+    return hit[0][1] if hit is not None else _compile_add(ere)[1]
 
 
 def for_long(pat: Pattern) -> Pattern:
