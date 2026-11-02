@@ -3,6 +3,11 @@
 
 usage: scripts/gen_unicode_tables.py [--gawk PATH] [--check]
 
+The gawk used is the one on PATH unless --gawk names another.  The tables
+depend on the gawk and C library versions (the module records gawk's), so
+--check passes only with the same ones; the committed module came from
+GNU Awk 5.4.1 with glibc's C.UTF-8 locale.
+
 In a UTF-8 locale pyawk's character classes (``[[:alpha:]]`` and the rest)
 and toupper/tolower follow gawk, which takes them from the C library's
 locale tables.  Python's own ``str.isalpha()`` and ``str.upper()`` follow
@@ -22,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -156,12 +162,23 @@ def render(members, upper, lower, version: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def main() -> int:
+def default_gawk() -> str:
+    """The gawk found on PATH (or just "gawk", to fail with a clear message)."""
+    return shutil.which("gawk") or "gawk"
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--gawk", default="/workspace/refs/local/bin/gawk")
+    ap.add_argument("--gawk", default=None, help="the gawk to ask (default: gawk on PATH)")
     ap.add_argument("--check", action="store_true", help="compare with the committed module, do not write")
-    args = ap.parse_args()
-    text = render(*ask_gawk(args.gawk))
+    args = ap.parse_args(argv)
+    gawk = args.gawk or default_gawk()
+    try:
+        text = render(*ask_gawk(gawk))
+    except (OSError, subprocess.CalledProcessError) as exc:
+        # No such program, not executable, or gawk itself failed.
+        print(f"gen_unicode_tables: cannot run {gawk}: {exc}", file=sys.stderr)
+        return 2
     if args.check:
         same = OUT.exists() and OUT.read_text() == text
         print("unicode_tables.py is up to date" if same else "unicode_tables.py differs from a fresh run")
