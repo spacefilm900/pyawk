@@ -587,6 +587,16 @@ class IOManager:
             # Our last output could not be written (a full disk, say).
             # onetrue-awk and gawk report this and exit with status 2.
             raise AwkRuntimeError(f"write error on standard output ({exc.strerror})") from None
+        # Standard error last: text written to "/dev/stderr" without a
+        # newline may still be waiting there.  If it cannot be written
+        # (2>/dev/full) the program ends with status 2, as in all three
+        # references; the message itself is lost (see cli._report).
+        try:
+            sys.stderr.flush()
+        except BrokenPipeError:
+            raise
+        except OSError as exc:
+            errors.append(f"write error on standard error ({exc.strerror})")
         if errors:
             raise AwkRuntimeError("; ".join(errors))
 

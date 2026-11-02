@@ -396,6 +396,29 @@ def test_fflush_of_a_file_on_a_full_disk_stops_the_program_with_status_2() -> No
         assert res.stderr.startswith("pyawk: write error on /dev/full"), call
 
 
+# Standard error itself on a full disk (2>/dev/full).  No message can be
+# shown, but the status must still say something went wrong: mawk,
+# onetrue-awk and gawk all exit with 2.  Python on its own fails to flush
+# standard error at shutdown and exits with 120 instead.
+@pytest.mark.skipif(not os.path.exists("/dev/full"), reason="needs /dev/full")
+@pytest.mark.parametrize(
+    "prog",
+    [
+        'printf "x" > "/dev/stderr"; close("/dev/stderr"); print "after" > OUT; exit 3',
+        'printf "x" > "/dev/stderr"; fflush("/dev/stderr"); print "after" > OUT; exit 3',
+        'printf "x" > "/dev/stderr"; exit 3',
+        'print "x" > "/dev/stderr"; exit 3',
+        'getline < ""',
+    ],
+)
+def test_unwritable_stderr_gives_status_2(prog: str, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    with open("/dev/full", "w") as full:
+        res = _run_with(f'BEGIN {{ OUT = "{out}"; {prog} }}', stderr=full)
+    assert res.returncode == 2
+    assert not out.exists()  # the program stopped at the failure
+
+
 def test_a_command_failing_at_exit_is_not_a_write_error() -> None:
     # A command's exit status is not a write failure: no error at exit.
     assert awk('BEGIN { print "x" | "exit 3" }') == ("", 0)

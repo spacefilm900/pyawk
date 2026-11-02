@@ -131,16 +131,34 @@ def _configure_stdio() -> None:
             stream.reconfigure(encoding=charset.ENCODING, errors=charset.ERRORS, newline="")  # type: ignore[union-attr]
 
 
+def _give_up_on(stream: IO[str]) -> None:
+    """Point a standard stream that cannot be written (a full disk, say) at
+    /dev/null, so the text still waiting in it is thrown away instead of
+    failing again when Python exits.  (Python reports that late failure
+    with exit status 120, where the C awks give 2.)"""
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, stream.fileno())
+    os.close(devnull)
+
+
 def _flush_stdout_or_give_up() -> None:
-    """Flush standard output before an error message; if even that fails
-    (the disk is full), point it at /dev/null so the text still waiting
-    there is thrown away instead of failing again when Python exits."""
+    """Flush standard output before an error message; if even that fails,
+    give up on it (see _give_up_on)."""
     try:
         sys.stdout.flush()
     except OSError:
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, sys.stdout.fileno())
-        os.close(devnull)
+        _give_up_on(sys.stdout)
+
+
+def _report(message: str) -> None:
+    """Write an error message to standard error.  If standard error cannot
+    be written either (2>/dev/full), the message is lost, as it is for the
+    C awks; the exit status 2 still tells that something went wrong."""
+    try:
+        sys.stderr.write(message)
+        sys.stderr.flush()
+    except OSError:
+        _give_up_on(sys.stderr)
 
 
 def run(
@@ -198,11 +216,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # (``-F 'b\.c'`` is the regex b.c, as in onetrue-awk and gawk).
         return run(source, operands, assignments, utf8=charset.UTF8)
     except UsageError as exc:
-        sys.stderr.write(f"pyawk: {exc}\n{USAGE}")
+        _report(f"pyawk: {exc}\n{USAGE}")
         return 2
     except AwkError as exc:
         _flush_stdout_or_give_up()
-        sys.stderr.write(f"pyawk: {exc}\n")
+        _report(f"pyawk: {exc}\n")
         return 2
     except BrokenPipeError:
         # The reader went away: our standard output (``pyawk ... | head``)
@@ -225,7 +243,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # output on a full disk): report it briefly rather than as a
         # Python traceback, and exit with status 2 like the C awks.
         _flush_stdout_or_give_up()
-        sys.stderr.write(f"pyawk: {exc.strerror or exc}\n")
+        _report(f"pyawk: {exc.strerror or exc}\n")
         return 2
     except RecursionError:
         # Parsing or compiling a program nested too deeply even for the big
