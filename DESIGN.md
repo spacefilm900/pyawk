@@ -939,7 +939,7 @@ All are covered by tests (`tests/test_io.py`, golden `environ`, `io` and
 | `nextfile` in BEGIN/END, in a function | undefined | see "Parse-time errors" | | | syntax error (majority) |
 | `cmd \| getline x + 1` | `(cmd \| getline x) + 1` (grammar) | target `x + 1`; `* / % ^` rejected | POSIX | POSIX | POSIX (see Parser) |
 | stdout flushed before every getline | not required | yes | no | no | no (majority; output order with a terminal is unaffected) |
-| `close()` of a file or of `/dev/stdout` when the last write or flush fails (e.g. `/dev/full`) | non-zero on failure | "write error on ...", exit 2 | fatal: "flush to ... failed", exit 2 | "close failed on file ...", exit 2 | -1, and the script carries on (POSIX: `close` reports the failure; consistent with `fflush`). **Split** with all three references, which stop the program |
+| `close()` of a file, `/dev/stdout` or `/dev/stderr` when the last write or flush fails (e.g. `/dev/full`) | close returns non-zero on failure | "write error on ...", exit 2 | fatal: "flush to ... failed", exit 2 | "close failed on file ...", exit 2 | "write error on NAME", exit 2: the program stops there (all three references; the user chose them over the POSIX reading, which would allow returning -1 and carrying on). A broken pipe still ends the program by SIGPIPE |
 | output to a file still unwritten at exit fails (`printf "x" > "/dev/full"`, no `close`) | an error is implied (data is lost) | "write error on ...", exit 2 | fatal: "flush to ... failed", exit 2 | "close failed on file ...", exit 2 | "write error on NAME", exit 2 (all agree; before this the data was lost silently with exit 0) |
 | several commands still open at exit | order unspecified | | | | nondeterministic in every awk; tests close them explicitly |
 

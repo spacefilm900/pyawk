@@ -453,39 +453,62 @@ class IOManager:
         name that is not open (gawk).
 
         If the last output cannot be written (a full disk, say), closing a
-        file, "/dev/stdout" or "/dev/stderr" returns -1: POSIX says close
-        returns non-zero when it fails.  (The three references stop the
-        program with a write error instead; see DESIGN.md.)  A broken pipe
-        on standard output is passed on, as for fflush.
+        file, "/dev/stdout" or "/dev/stderr" stops the program with "write
+        error on NAME" and exit status 2, as mawk, onetrue-awk and gawk do
+        (see "I/O decisions" in DESIGN.md).  A broken pipe on standard
+        output is passed on, as for fflush, so the program ends by SIGPIPE.
         """
         if name in self.specials_used:
             self.specials_used.discard(name)
             if name == "/dev/stdout":
-                return self._flush_one(self.stdout)
-            if name == "/dev/stderr":
-                return self._flush_one(sys.stderr)
-            self.use_up_stdin()
+                self._flush_or_stop(self.stdout, name)
+            elif name == "/dev/stderr":
+                self._flush_or_stop(sys.stderr, name)
+            else:
+                self.use_up_stdin()
             return 0
         status = -1
         entry = self.outputs.pop(name, None)
         if entry is not None:
-            stream, proc = entry
-            failed = False
-            try:
-                stream.close()  # Python closes the file even if this raises
-            except OSError:
-                failed = True
-            if proc is not None:
-                # A command that exited without reading all its input makes
-                # the close fail (a broken pipe); its exit status is still
-                # the answer (see "close()" in DESIGN.md).
-                status = _wait_status(proc)
-            else:
-                status = -1 if failed else 0
+            status, error = self._close_output(name, entry)
+            if error is not None:
+                raise AwkRuntimeError(error)
         reader = self.inputs.pop(name, None)
         if reader is not None:
             status = reader.close()
         return status
+
+    @staticmethod
+    def _close_output(name: str, entry: tuple[IO[str], subprocess.Popen[bytes] | None]) -> tuple[int, str | None]:
+        """Close one output file or command that has been taken out of the
+        table.  Returns (status, error): the status close() gives, and the
+        "write error on NAME" message if a file's last output could not be
+        written (None otherwise)."""
+        stream, proc = entry
+        try:
+            stream.close()  # Python closes the file even if this raises
+        except OSError as exc:
+            if proc is None:
+                return -1, f"write error on {name} ({exc.strerror})"
+            # A command that exited without reading all its input makes the
+            # close fail (a broken pipe); its exit status is still the
+            # answer (see "close()" in DESIGN.md), not a write error.
+        if proc is not None:
+            return _wait_status(proc), None
+        return 0, None
+
+    @staticmethod
+    def _flush_or_stop(stream: IO[str], name: str) -> None:
+        """Flush one stream; if the system refuses (a full disk, say), stop
+        the program with "write error on NAME" (exit status 2), as the
+        reference awks do.  A broken pipe is passed on unchanged, so the
+        program ends by SIGPIPE."""
+        try:
+            stream.flush()
+        except BrokenPipeError:
+            raise
+        except OSError as exc:
+            raise AwkRuntimeError(f"write error on {name} ({exc.strerror})") from None
 
     def flush_all(self) -> int:
         """Flush standard output and every open output file or command.
@@ -533,15 +556,15 @@ class IOManager:
         # list(...) takes a copy of the names, because close() removes
         # entries and Python forbids changing a dict while looping over it.
         # A file whose last output cannot be written (a full disk, say) is
-        # remembered: its data is lost, so after everything else is closed
-        # the program ends with a write error and status 2 (all three
-        # references).  For a command, close() gives its exit status, which
-        # is not a write failure.
-        unwritten = []
+        # remembered rather than stopping at once, so the other files are
+        # still closed; then the program ends with a write error and status
+        # 2 (all three references).  A command's exit status is not a write
+        # failure.
+        errors = []
         for name in list(self.outputs):
-            is_file = self.outputs[name][1] is None
-            if self.close(name) == -1 and is_file:
-                unwritten.append(name)
+            _, error = self._close_output(name, self.outputs.pop(name))
+            if error is not None:
+                errors.append(error)
         for name in list(self.inputs):
             self.close(name)
         try:
@@ -552,8 +575,8 @@ class IOManager:
             # Our last output could not be written (a full disk, say).
             # onetrue-awk and gawk report this and exit with status 2.
             raise AwkRuntimeError(f"write error on standard output ({exc.strerror})") from None
-        if unwritten:
-            raise AwkRuntimeError("write error on " + ", ".join(unwritten))
+        if errors:
+            raise AwkRuntimeError("; ".join(errors))
 
 
 # ---------------------------------------------------------------- interpreter

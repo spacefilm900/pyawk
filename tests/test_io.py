@@ -279,10 +279,10 @@ def test_close_dev_stderr_after_printing_to_it_returns_zero(capsys: pytest.Captu
 
 
 # A close() whose last write fails (a full disk, say) must not report
-# success (CodeRabbit, PR #1).  POSIX: close returns zero if the close was
-# successful, otherwise non-zero; we give -1, as fflush does.  (mawk,
-# onetrue-awk and gawk all stop the program with a write error instead;
-# see DESIGN.md.)
+# success (CodeRabbit, PR #1).  mawk, onetrue-awk and gawk all stop the
+# program there with a write error naming the output and exit status 2, and
+# we do the same (the user's choice; POSIX would also allow returning a
+# non-zero value and carrying on).  See DESIGN.md, "I/O decisions".
 class _FailingCloseStream(_FailingStream):
     """A fake output file whose flush() and close() both fail.
 
@@ -296,24 +296,27 @@ class _FailingCloseStream(_FailingStream):
             raise self.error
 
 
-def test_close_dev_stdout_returns_minus_one_when_the_flush_fails() -> None:
+def test_close_dev_stdout_is_a_write_error_when_the_flush_fails() -> None:
     from pyawk import runtime
 
     table = runtime.IOManager(_FailingStream(OSError(28, "No space")), io.BytesIO())
     table.specials_used.add("/dev/stdout")
-    assert table.close("/dev/stdout") == -1
+    with pytest.raises(AwkRuntimeError, match="^write error on /dev/stdout"):
+        table.close("/dev/stdout")
 
 
-def test_close_dev_stderr_returns_minus_one_when_the_flush_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_close_dev_stderr_is_a_write_error_when_the_flush_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     from pyawk import runtime
 
     monkeypatch.setattr(sys, "stderr", _FailingStream(OSError(28, "No space")))
     table = runtime.IOManager(io.StringIO(), io.BytesIO())
     table.specials_used.add("/dev/stderr")
-    assert table.close("/dev/stderr") == -1
+    with pytest.raises(AwkRuntimeError, match="^write error on /dev/stderr"):
+        table.close("/dev/stderr")
 
 
 def test_close_dev_stdout_lets_broken_pipe_through() -> None:
+    # A reader that has gone away still ends the program by SIGPIPE.
     from pyawk import runtime
 
     table = runtime.IOManager(_FailingStream(BrokenPipeError()), io.BytesIO())
@@ -322,16 +325,41 @@ def test_close_dev_stdout_lets_broken_pipe_through() -> None:
         table.close("/dev/stdout")
 
 
-def test_close_of_a_file_returns_minus_one_when_the_last_write_fails() -> None:
+def test_close_of_a_file_is_a_write_error_when_the_last_write_fails() -> None:
     table = _io_table_with(_FailingCloseStream(OSError(28, "No space")))
-    assert table.close("out") == -1
+    with pytest.raises(AwkRuntimeError, match="^write error on out"):
+        table.close("out")
     assert "out" not in table.outputs  # it is closed all the same
 
 
+def _run_with(
+    prog: str, stdout: Any = subprocess.PIPE, stderr: Any = subprocess.PIPE
+) -> subprocess.CompletedProcess[str]:
+    """Run ``python -m pyawk prog`` as a real process."""
+    return subprocess.run([sys.executable, "-m", "pyawk", prog], stdout=stdout, stderr=stderr, text=True, cwd=REPO)
+
+
 @pytest.mark.skipif(not os.path.exists("/dev/full"), reason="needs /dev/full")
-def test_close_on_a_full_disk_gives_minus_one() -> None:
-    prog = 'BEGIN { printf "x" > "/dev/full"; print close("/dev/full") }'
-    assert awk(prog) == ("-1\n", 0)
+def test_close_on_a_full_disk_stops_the_program_with_status_2() -> None:
+    # The program stops at the close: "after" is never printed, and the
+    # status is 2 rather than the 3 the program asked for.
+    res = _run_with('BEGIN { printf "x" > "/dev/full"; close("/dev/full"); print "after"; exit 3 }')
+    assert res.stdout == ""
+    assert res.stderr.startswith("pyawk: write error on /dev/full")
+    assert "Traceback" not in res.stderr
+    assert res.returncode == 2
+
+
+@pytest.mark.skipif(not os.path.exists("/dev/full"), reason="needs /dev/full")
+def test_close_dev_stdout_on_a_full_disk_stops_the_program_with_status_2() -> None:
+    # Standard output is /dev/full.  onetrue-awk and mawk stop at the close;
+    # only gawk --posix warns and carries on.
+    with open("/dev/full", "w") as full:
+        prog = 'BEGIN { printf "x" > "/dev/stdout"; close("/dev/stdout"); print "after" > "/dev/stderr"; exit 3 }'
+        res = _run_with(prog, stdout=full)
+    assert len(res.stderr.splitlines()) == 1  # "after" never printed
+    assert res.stderr.startswith("pyawk: write error on /dev/stdout")
+    assert res.returncode == 2
 
 
 @pytest.mark.skipif(not os.path.exists("/dev/full"), reason="needs /dev/full")
