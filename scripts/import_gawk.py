@@ -3,6 +3,11 @@
 
 usage: scripts/import_gawk.py [--src DIR] [--onetrue AWK] [--mawk AWK] [--gawk AWK]
 
+The reference awks default to $PYAWK_REF_ONETRUE, $PYAWK_REF_MAWK and
+$PYAWK_REF_GAWK, else to the programs on PATH; the source defaults to
+$PYAWK_REF_GAWK_TESTDIR.
+See awk_tests/references.py.
+
 gawk's ``test/Makefile.am`` names its tests in lists.  We import two:
 
 * ``BASIC_TESTS`` -- about 300 tests of core awk behaviour;
@@ -88,6 +93,9 @@ DEST = REPO / "awk_tests" / "gawk"
 sys.path.insert(0, str(REPO))
 from pyawk.errors import AwkSyntaxError, AwkUnsupportedError  # noqa: E402
 from pyawk.parser import parse  # noqa: E402
+
+sys.path.insert(0, str(REPO / "awk_tests"))
+import references  # noqa: E402
 
 
 @dataclass
@@ -396,12 +404,20 @@ def classify(source: str, ok: str, refs: dict[str, RefResult], exact: RefResult,
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--src", type=Path, default=Path("/workspace/refs/src/gawk-5.4.1/test"))
-    ap.add_argument("--onetrue", default="/workspace/refs/onetrue-awk/a.out")
-    ap.add_argument("--mawk", default="/usr/bin/mawk")
-    ap.add_argument("--gawk", default="/workspace/refs/local/bin/gawk")
+    ap.add_argument("--src", type=Path, help="gawk's test/ directory (default: $PYAWK_REF_GAWK_TESTDIR)")
+    ap.add_argument("--onetrue", help="onetrue-awk program (default: $PYAWK_REF_ONETRUE, else on PATH)")
+    ap.add_argument("--mawk", help="mawk program (default: $PYAWK_REF_MAWK, else on PATH)")
+    ap.add_argument("--gawk", help="gawk program, run with --posix (default: $PYAWK_REF_GAWK, else on PATH)")
     opts = ap.parse_args()
-    awks = {"onetrue": [opts.onetrue], "mawk": [opts.mawk], "gawk": [opts.gawk, "--posix"]}
+    # Find everything first: a missing awk or test directory must stop the
+    # import before it clears awk_tests/gawk/.
+    try:
+        awks = references.commands(("onetrue", "mawk", "gawk"),
+                                   explicit={"onetrue": opts.onetrue, "mawk": opts.mawk, "gawk": opts.gawk})
+        opts.src = references.test_dir("gawk", opts.src)
+    except references.MissingReference as exc:
+        print(f"import_gawk: {exc}", file=sys.stderr)
+        return 2
 
     makefile = (opts.src / "Makefile.am").read_text()
     lists = makefile_lists(makefile)
@@ -472,8 +488,8 @@ def main() -> int:
             flags.append("--posix")
         if in_list(name, "NEED_LINT"):
             flags.append("--lint")
-        exact = run_ref([opts.gawk, *flags], name, DEST, spec, merge_stderr=True)
-        exact_sep = run_ref([opts.gawk, *flags], name, DEST, spec)
+        exact = run_ref([awks["gawk"][0], *flags], name, DEST, spec, merge_stderr=True)
+        exact_sep = run_ref([awks["gawk"][0], *flags], name, DEST, spec)
         ok_file = opts.src / f"{name}.ok"
         ok = ok_file.read_text(encoding="utf-8", errors="surrogateescape") if ok_file.exists() else ""
         status, reason, note, expected = classify(source, ok, refs, exact, exact_sep, name == "exitval1")

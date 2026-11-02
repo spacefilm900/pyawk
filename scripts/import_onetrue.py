@@ -3,6 +3,11 @@
 
 usage: scripts/import_onetrue.py [--src DIR] [--onetrue AWK] [--mawk AWK] [--gawk AWK]
 
+The reference awks default to $PYAWK_REF_ONETRUE, $PYAWK_REF_MAWK and
+$PYAWK_REF_GAWK, else to the programs on PATH; the source defaults to
+$PYAWK_REF_ONETRUE_TESTDIR (else testdir/ beside the onetrue program).
+See awk_tests/references.py.
+
 The onetrue-awk repository has a directory ``testdir/`` with two families of
 small programs:
 
@@ -56,6 +61,9 @@ DEST = REPO / "awk_tests" / "onetrue"
 sys.path.insert(0, str(REPO))
 from pyawk.errors import AwkSyntaxError, AwkUnsupportedError  # noqa: E402
 from pyawk.parser import parse  # noqa: E402
+
+sys.path.insert(0, str(REPO / "awk_tests"))
+import references  # noqa: E402
 
 # Upstream file that is named like a test but is really a helper program
 # that upstream never runs on test.countries; we leave it out.
@@ -183,12 +191,21 @@ def classify(name: str, source: str, refs: dict[str, RefResult]) -> tuple[str, s
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--src", type=Path, default=Path("/workspace/refs/onetrue-awk/testdir"))
-    ap.add_argument("--onetrue", default="/workspace/refs/onetrue-awk/a.out")
-    ap.add_argument("--mawk", default="/usr/bin/mawk")
-    ap.add_argument("--gawk", default="/workspace/refs/local/bin/gawk")
+    ap.add_argument("--src", type=Path, help="onetrue-awk's testdir/ (default: $PYAWK_REF_ONETRUE_TESTDIR, "
+                    "else testdir/ beside the onetrue program)")
+    ap.add_argument("--onetrue", help="onetrue-awk program (default: $PYAWK_REF_ONETRUE, else on PATH)")
+    ap.add_argument("--mawk", help="mawk program (default: $PYAWK_REF_MAWK, else on PATH)")
+    ap.add_argument("--gawk", help="gawk program, run with --posix (default: $PYAWK_REF_GAWK, else on PATH)")
     opts = ap.parse_args()
-    awks = {"onetrue": [opts.onetrue], "mawk": [opts.mawk], "gawk": [opts.gawk, "--posix"]}
+    # Find everything first: a missing awk or test directory must stop the
+    # import before it clears awk_tests/onetrue/.
+    try:
+        awks = references.commands(("onetrue", "mawk", "gawk"),
+                                   explicit={"onetrue": opts.onetrue, "mawk": opts.mawk, "gawk": opts.gawk})
+        opts.src = references.test_dir("onetrue", opts.src)
+    except references.MissingReference as exc:
+        print(f"import_onetrue: {exc}", file=sys.stderr)
+        return 2
 
     # Start from an empty directory so removed upstream tests disappear too.
     # KNOWN_FAILURES is ours, not imported (run_golden.py maintains it), so
