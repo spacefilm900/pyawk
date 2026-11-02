@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate golden ``.out`` files by running the system awk (default mawk).
 
-usage: scripts/regen_golden.py [--awk /usr/bin/mawk] [--check | --vote] [CATEGORY/NAME ...]
+usage: scripts/regen_golden.py [--awk AWK] [--check | --vote] [CATEGORY/NAME ...]
 
 --check  compare the system awk against the existing .out files instead of
          writing them (useful to spot reference-implementation drift).
@@ -21,6 +21,10 @@ Cases listed in awk_tests/golden/OVERRIDES have hand-corrected .out files
 (mawk is the outlier there; see DESIGN.md).  They are never rewritten, and
 under --check a difference from mawk is reported as expected, not counted.
 
+The reference awks are found through PYAWK_REF_MAWK, PYAWK_REF_ONETRUE
+and PYAWK_REF_GAWK, or else on PATH (see awk_tests/references.py); --awk
+names another awk to use instead of mawk.
+
 The ``.out`` files are the "golden" answers that run_golden.py and the
 pytest suite compare pyawk against, so they are made with a real awk.
 """
@@ -35,14 +39,14 @@ from pathlib import Path
 # Make awk_tests/ importable (shared harness.py); see run_golden.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "awk_tests"))
 import harness  # noqa: E402
-
+import references  # noqa: E402
 
 # The three reference awks (see DESIGN.md, "Golden corpus and mawk").
-REFERENCES = {
-    "mawk": ["/usr/bin/mawk"],
-    "onetrue": ["/workspace/refs/onetrue-awk/a.out"],
-    "gawk": ["/workspace/refs/local/bin/gawk", "--posix"],
-}
+REFERENCES = ("mawk", "onetrue", "gawk")
+
+# The reference that writes and checks the .out files unless --awk says
+# otherwise.
+DEFAULT_REFERENCE = "mawk"
 
 # The reference whose answer the DECISIONS cases follow (close() keeps a
 # command's exit status, as mawk does).
@@ -56,12 +60,20 @@ def is_utf8(case: harness.Case) -> bool:
     return harness.locale_for(case.id) != "C"
 
 
-def reference_command(case: harness.Case, awk: list[str]) -> list[str]:
-    """The awk that writes or checks this case's .out: the chosen one, except
-    that the default (mawk) cannot do UTF-8 cases, so gawk does those."""
-    if is_utf8(case) and awk == REFERENCES["mawk"]:
-        return REFERENCES[UTF8_REFERENCE]
-    return awk
+def reference(name: str) -> list[str]:
+    """The command that runs reference ``name``; raises
+    references.MissingReference (with a how-to-fix message) if it is not
+    installed."""
+    return references.command(name)
+
+
+def reference_command(case: harness.Case, awk: list[str] | None) -> list[str]:
+    """The awk that writes or checks this case's .out: the one chosen with
+    --awk if any; otherwise mawk, except that mawk cannot do UTF-8 cases,
+    so gawk does those."""
+    if awk is not None:
+        return awk
+    return reference(UTF8_REFERENCE if is_utf8(case) else DEFAULT_REFERENCE)
 
 
 def vote(cases: list[harness.Case]) -> int:
@@ -80,7 +92,7 @@ def vote(cases: list[harness.Case]) -> int:
         if is_utf8(case):
             problems += vote_utf8(case, overrides)
             continue
-        outputs = {name: harness.run_case(case, cmd).stdout for name, cmd in REFERENCES.items()}
+        outputs = {name: harness.run_case(case, reference(name)).stdout for name in REFERENCES}
         # Group the references by identical output: {output: [names]}.
         groups: dict[str, list[str]] = {}
         for name, out in outputs.items():
@@ -121,7 +133,7 @@ def vote_utf8(case: harness.Case, overrides: dict[str, str]) -> int:
     The .out must be gawk's answer, unless the case is hand-corrected in
     OVERRIDES; a different onetrue-awk answer is reported, not counted.
     """
-    outputs = {name: harness.run_case(case, REFERENCES[name]).stdout for name in ("onetrue", "gawk")}
+    outputs = {name: harness.run_case(case, reference(name)).stdout for name in ("onetrue", "gawk")}
     expected = case.expected() if case.path(".out").exists() else None
     if expected is None:
         # Nothing recorded at all: a problem even for a hand-corrected case,
@@ -141,17 +153,35 @@ def vote_utf8(case: harness.Case, overrides: dict[str, str]) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--awk", default="/usr/bin/mawk", help="reference awk command")
+    ap.add_argument("--awk", help="awk command to use instead of mawk (and gawk for utf8 cases)")
     ap.add_argument("--check", action="store_true", help="only compare, do not write")
     ap.add_argument("--vote", action="store_true", help="compare all three references with each other and .out")
     ap.add_argument("cases", nargs="*", help="limit to CATEGORY or CATEGORY/NAME")
     opts = ap.parse_args()
     # Split "--awk 'gawk --posix'" into a command plus arguments, shell-style.
-    awk = shlex.split(opts.awk)
+    awk = shlex.split(opts.awk) if opts.awk else None
+    try:
+        return run(opts, awk)
+    except references.MissingReference as exc:
+        print(f"regen_golden: {exc}", file=sys.stderr)
+        return 2
+
+
+def run(opts: argparse.Namespace, awk: list[str] | None) -> int:
+    """main's work, once the options are read."""
     # Only the hand-written golden categories: the onetrue suite's .out files
     # come from onetrue-awk and are regenerated by import_onetrue.py instead.
     golden = harness.discover(harness.CATEGORIES)
     selected = [c for c in golden if not opts.cases or c.id in opts.cases or c.category in opts.cases]
+    # Find every reference this run needs before touching any file, so a
+    # missing one stops the run cleanly instead of half-way through.
+    if opts.vote:
+        needed: tuple[str, ...] = REFERENCES
+    elif awk is not None:
+        needed = ()
+    else:
+        needed = (DEFAULT_REFERENCE,) + ((UTF8_REFERENCE,) if any(is_utf8(c) for c in selected) else ())
+    references.commands(needed)
     if opts.vote:
         return 1 if vote(selected) else 0
     overrides = harness.read_overrides()
@@ -175,8 +205,8 @@ def main() -> int:
     action = "checked" if opts.check else "regenerated"
     # The utf8 cases use gawk when the default mawk was chosen; say so.
     utf8_cases = [c for c in selected if is_utf8(c)]
-    used = opts.awk
-    if utf8_cases:
+    used = opts.awk or " ".join(reference(DEFAULT_REFERENCE))
+    if utf8_cases and awk is None:
         used += f" ({len(utf8_cases)} utf8 cases with {' '.join(reference_command(utf8_cases[0], awk))})"
     print(f"{action} {len(selected)} cases with {used}" + (f", {bad} differ" if opts.check else ""))
     return 1 if bad else 0

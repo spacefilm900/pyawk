@@ -20,6 +20,19 @@ def _load_regen():
     return mod
 
 
+# Stand-in commands for the three references, so these tests need none of
+# them installed; regen.reference is patched to return these.
+FAKE_REFS = {"mawk": ["fake-mawk"], "onetrue": ["fake-onetrue"], "gawk": ["fake-gawk", "--posix"]}
+
+
+def _fake_refs(monkeypatch: pytest.MonkeyPatch, regen) -> None:
+    monkeypatch.setattr(regen, "reference", lambda name: FAKE_REFS[name])
+
+
+def _ref_name(cmd: list[str]) -> str:
+    return next(k for k, v in FAKE_REFS.items() if v == cmd)
+
+
 def _environ_case() -> harness.Case:
     return next(c for c in harness.discover(["environ"]) if c.path(".environ").exists())
 
@@ -47,8 +60,8 @@ def test_decided_case_must_match_chosen_reference(
     # Pretend mawk says "mawk" and the other two say "zero" (a 2-1 split
     # against the decision), and that the decision follows mawk.
     answers = {"mawk": "mawk\n", "onetrue": "zero\n", "gawk": "zero\n"}
-    monkeypatch.setattr(regen.harness, "run_case", lambda case, cmd: SimpleNamespace(
-        stdout=next(v for k, v in answers.items() if regen.REFERENCES[k] == cmd)))
+    _fake_refs(monkeypatch, regen)
+    monkeypatch.setattr(regen.harness, "run_case", lambda case, cmd: SimpleNamespace(stdout=answers[_ref_name(cmd)]))
     monkeypatch.setattr(regen.harness, "read_decisions", lambda: {"io/close_status": "follow mawk"})
     assert regen.vote([_fake_case(tmp_path, recorded)]) == problems
 
@@ -62,8 +75,8 @@ def test_decided_case_with_three_way_split_follows_the_decision(
     # as SPLIT (CodeRabbit, PR #1).
     regen = _load_regen()
     answers = {"mawk": "mawk\n", "onetrue": "onetrue\n", "gawk": "gawk\n"}
-    monkeypatch.setattr(regen.harness, "run_case", lambda case, cmd: SimpleNamespace(
-        stdout=next(v for k, v in answers.items() if regen.REFERENCES[k] == cmd)))
+    _fake_refs(monkeypatch, regen)
+    monkeypatch.setattr(regen.harness, "run_case", lambda case, cmd: SimpleNamespace(stdout=answers[_ref_name(cmd)]))
     monkeypatch.setattr(regen.harness, "read_decisions", lambda: {"io/close_status": "follow mawk"})
     assert regen.vote([_fake_case(tmp_path, recorded)]) == problems
 
@@ -98,8 +111,10 @@ def test_utf8_vote_follows_gawk_without_mawk(
     answers = {"onetrue": "onetrue\n", "gawk": "gawk\n"}
     ran = []
 
+    _fake_refs(monkeypatch, regen)
+
     def fake_run(case, cmd):
-        name = next(k for k, v in regen.REFERENCES.items() if v == cmd)
+        name = _ref_name(cmd)
         ran.append(name)
         return SimpleNamespace(stdout=answers[name])
 
@@ -119,6 +134,7 @@ def test_overridden_utf8_case_without_an_out_file_is_a_problem(
     regen = _load_regen()
     missing = tmp_path / "x.out"  # never written
     case = SimpleNamespace(id="utf8/x", path=lambda ext: missing, expected=lambda: missing.read_text())
+    _fake_refs(monkeypatch, regen)
     monkeypatch.setattr(regen.harness, "run_case", lambda case, cmd: SimpleNamespace(stdout="gawk\n"))
     monkeypatch.setattr(regen.harness, "read_decisions", lambda: {})
     monkeypatch.setattr(regen.harness, "read_overrides", lambda: {"utf8/x": "pyawk's choice"})
@@ -126,11 +142,28 @@ def test_overridden_utf8_case_without_an_out_file_is_a_problem(
     assert "no .out file" in capsys.readouterr().out
 
 
-def test_utf8_cases_are_regenerated_with_gawk() -> None:
+def test_utf8_cases_are_regenerated_with_gawk(monkeypatch: pytest.MonkeyPatch) -> None:
+    # With no --awk, the default reference is mawk, except for UTF-8 cases
+    # (mawk works on bytes), which use gawk --posix.
     regen = _load_regen()
+    _fake_refs(monkeypatch, regen)
     utf8 = SimpleNamespace(id="utf8/x")
     basic = SimpleNamespace(id="basic/x")
-    assert regen.reference_command(utf8, regen.REFERENCES["mawk"]) == regen.REFERENCES["gawk"]
-    assert regen.reference_command(basic, regen.REFERENCES["mawk"]) == regen.REFERENCES["mawk"]
+    assert regen.reference_command(utf8, None) == FAKE_REFS["gawk"]
+    assert regen.reference_command(basic, None) == FAKE_REFS["mawk"]
     # An explicitly chosen awk is used as it is.
     assert regen.reference_command(utf8, ["/bin/other"]) == ["/bin/other"]
+
+
+@pytest.mark.parametrize("args", [["--check", "basic/begin_end"], ["--vote", "basic/begin_end"]])
+def test_regen_without_the_references_is_a_clear_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], args: list[str]
+) -> None:
+    regen = _load_regen()
+    for var in ("PYAWK_REF_MAWK", "PYAWK_REF_ONETRUE", "PYAWK_REF_GAWK"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))  # nothing installed
+    monkeypatch.setattr(sys, "argv", ["regen_golden.py", *args])
+    assert regen.main() == 2
+    err = capsys.readouterr().err
+    assert "PYAWK_REF_MAWK" in err
