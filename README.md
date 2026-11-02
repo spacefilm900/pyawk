@@ -138,11 +138,11 @@ scripts/run_golden.py gawk --diff
 
 ### Current test status
 
-As of 2026-11-01 (`.venv/bin/python -m pytest -q`, `scripts/run_golden.py`):
+As of 2026-11-02 (`.venv/bin/python -m pytest -q` with the three reference awks found, `scripts/run_golden.py`):
 
 | suite | pass | fail | skip |
 |---|---|---|---|
-| pytest (all) | 1900 | 0 | 122 |
+| pytest (all) | 1967 | 0 | 122 |
 | own golden corpus (incl. regex_posix 8, utf8 17) | 154 | 0 | 0 |
 | imported onetrue-awk | 215 | 0 | 9 |
 | imported gawk | 192 | 0 | 112 |

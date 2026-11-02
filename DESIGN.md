@@ -810,10 +810,10 @@ and new code: regex 0.565 / 0.565–0.570 s, gsub 0.829–0.841 /
 
 ## Test status
 
-pytest: 1900 passed, 122 skipped. Golden summaries: own corpus 154/154
+pytest: 1967 passed, 122 skipped (4 more skips without the reference awks). Golden summaries: own corpus 154/154
 (nine v1.0 categories with 99 cases, plus environ 5, io 18, nextfile 7,
 regex_posix 8 and utf8 17), onetrue-awk 215 pass / 9 skip, gawk 192 pass /
-112 skip, no failures and empty `KNOWN_FAILURES` lists (2026-11-01,
+112 skip, no failures and empty `KNOWN_FAILURES` lists (2026-11-02,
 `enhancements` branch). The regex differential record (570 patterns,
 13 503 input lines) and the UTF-8 one (88 patterns, 2 152 lines) have no
 mismatches. v1.0 had 744 / 99 / 215 / 190. The extra gawk cases
