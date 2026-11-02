@@ -17,11 +17,12 @@ to a temporary file and is compared with the first reference awk's (mawk
 if installed, else gawk, else onetrue-awk), so the benchmark doubles as a
 quick correctness check (``DIFF`` marks a mismatch).
 
-The reference awks are found by name on PATH (``mawk``; ``gawk``, run with
-``--posix``; onetrue-awk as ``original-awk``, ``onetrue-awk`` or
-``bwk-awk``), and by default every one that is installed is timed.
-``--path NAME=PROGRAM`` points at one that is not on PATH, for example
-``--path onetrue=$HOME/src/onetrue-awk/a.out``.
+The reference awks are found as in all the tooling (awk_tests/references.py):
+the variable PYAWK_REF_MAWK, PYAWK_REF_GAWK or PYAWK_REF_ONETRUE if set,
+else by name on PATH (``mawk``; ``gawk``, run with ``--posix``; onetrue-awk
+as ``original-awk``, ``onetrue-awk`` or ``bwk-awk``).  By default every one
+that is found is timed.  ``--path NAME=PROGRAM`` overrides both for one
+run, for example ``--path onetrue=$HOME/src/onetrue-awk/a.out``.
 
 Every awk runs with ``LC_ALL=C`` (bytes) unless ``--locale`` names another
 locale, e.g. ``--locale C.UTF-8`` to time pyawk's UTF-8 (characters) mode.
