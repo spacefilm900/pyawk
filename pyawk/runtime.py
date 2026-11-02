@@ -513,16 +513,19 @@ class IOManager:
     def flush_all(self) -> int:
         """Flush standard output and every open output file or command.
 
-        Returns 0 if all of them were flushed, -1 if any flush failed (a
-        full disk, say); the others are still flushed.  A broken pipe (the
-        reader has gone away) is not a failure we report: it is passed on,
-        so the CLI ends the program as SIGPIPE ends a C awk (mawk and
+        Returns 0, or -1 if standard output could not be flushed (a full
+        disk, say): the program carries on, as in mawk and onetrue-awk, and
+        the same failure at exit then ends it with status 2.  An output
+        file or command that cannot be flushed stops the program with
+        "write error on NAME" and status 2 (onetrue-awk and gawk; mawk
+        returns -1).  A broken pipe (the reader has gone away) is passed
+        on, so the CLI ends the program as SIGPIPE ends a C awk (mawk and
         onetrue-awk; gawk stops with an error).
         """
         status = self._flush_one(self.stdout)
-        # .values() gives the (stream, process) pairs; only the stream matters.
-        for stream, _ in self.outputs.values():
-            status = min(status, self._flush_one(stream))
+        # .items() gives name -> (stream, process); only the stream matters.
+        for name, (stream, _) in self.outputs.items():
+            self._flush_or_stop(stream, name)
         return status
 
     @staticmethod
@@ -539,15 +542,24 @@ class IOManager:
         return 0
 
     def flush(self, name: str) -> int:
-        """fflush(name): 0 if ``name`` is an open output flushed successfully, else -1."""
+        """fflush(name): 0 if ``name`` is an open output flushed successfully,
+        -1 if it is not open for output.
+
+        If the flush fails (a full disk, say), standard output gives -1 and
+        the program carries on (see flush_all); "/dev/stderr", a file or a
+        command stops the program with "write error on NAME" and status 2
+        (onetrue-awk and gawk; for /dev/stderr mawk too).
+        """
         if name == "/dev/stdout":
             return self._flush_one(self.stdout)
         if name == "/dev/stderr":
-            return self._flush_one(sys.stderr)
+            self._flush_or_stop(sys.stderr, name)
+            return 0
         entry = self.outputs.get(name)
         if entry is None:
             return -1  # not open, or open only for reading
-        return self._flush_one(entry[0])
+        self._flush_or_stop(entry[0], name)
+        return 0
 
     def close_all(self) -> None:
         # Close redirections first, waiting for commands to finish, then

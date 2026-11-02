@@ -156,8 +156,11 @@ def test_nextfile_rule_order(three_files: list[str]) -> None:
 
 
 # ---------------------------------------------------------------- fflush(name)
-# fflush("name") on an open output: 0 on success, -1 if the flush fails,
-# but a broken pipe is passed on so the program dies quietly by SIGPIPE.
+# fflush("name") on an open output: 0 on success.  If the flush fails (a
+# full disk, say) the program stops with "write error on NAME" and status 2
+# (onetrue-awk and gawk; mawk returns -1 and carries on).  A broken pipe is
+# passed on so the program dies quietly by SIGPIPE.  Standard output is the
+# exception: see test_fflush_on_full_disk_gives_minus_one_then_a_clean_write_error.
 
 class _FailingStream(io.StringIO):
     """A fake output stream whose flush() raises the error we give it."""
@@ -183,9 +186,10 @@ def test_named_fflush_returns_zero_on_success() -> None:
     assert _io_table_with(io.StringIO()).flush("out") == 0
 
 
-def test_named_fflush_returns_minus_one_on_os_error() -> None:
+def test_named_fflush_is_a_write_error_on_os_error() -> None:
     # A failed flush (disk full, say) must be reported, not hidden as 0.
-    assert _io_table_with(_FailingStream(OSError(28, "No space"))).flush("out") == -1
+    with pytest.raises(AwkRuntimeError, match="^write error on out"):
+        _io_table_with(_FailingStream(OSError(28, "No space"))).flush("out")
 
 
 def test_named_fflush_lets_broken_pipe_through() -> None:
@@ -195,8 +199,9 @@ def test_named_fflush_lets_broken_pipe_through() -> None:
 
 
 # fflush("/dev/stdout") and fflush("/dev/stderr") name the standard streams
-# rather than an entry in the table, but a failed flush must still give -1
-# (CodeRabbit, PR #1).  mawk and onetrue-awk return -1 here.
+# rather than an entry in the table, but a failure must still be reported
+# (CodeRabbit, PR #1).  For standard output, mawk and onetrue-awk return -1
+# and carry on (gawk stops); for standard error all three stop with status 2.
 def test_fflush_dev_stdout_returns_minus_one_on_os_error() -> None:
     from pyawk import runtime
 
@@ -212,18 +217,21 @@ def test_fflush_dev_stdout_lets_broken_pipe_through() -> None:
         table.flush("/dev/stdout")
 
 
-def test_fflush_dev_stderr_returns_minus_one_on_os_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fflush_dev_stderr_is_a_write_error_on_os_error(monkeypatch: pytest.MonkeyPatch) -> None:
     from pyawk import runtime
 
     monkeypatch.setattr(sys, "stderr", _FailingStream(OSError(28, "No space")))
-    assert runtime.IOManager(io.StringIO(), io.BytesIO()).flush("/dev/stderr") == -1
+    with pytest.raises(AwkRuntimeError, match="^write error on /dev/stderr"):
+        runtime.IOManager(io.StringIO(), io.BytesIO()).flush("/dev/stderr")
 
 
-# fflush() with no name flushes everything; it must report -1 if any of the
-# flushes failed (CodeRabbit, PR #1), and still pass a broken pipe on.
-def test_flush_all_reports_a_failed_output() -> None:
+# fflush() with no name flushes everything.  A file that cannot be flushed
+# stops the program, as for fflush(name); standard output gives -1
+# (CodeRabbit, PR #1); a broken pipe is passed on.
+def test_flush_all_with_a_failed_output_is_a_write_error() -> None:
     table = _io_table_with(_FailingStream(OSError(28, "No space")))
-    assert table.flush_all() == -1
+    with pytest.raises(AwkRuntimeError, match="^write error on out"):
+        table.flush_all()
 
 
 def test_flush_all_reports_failed_stdout() -> None:
@@ -377,6 +385,15 @@ def test_a_file_that_cannot_be_written_at_exit_is_a_write_error() -> None:
     assert "write error on /dev/full" in res.stderr
     assert "Traceback" not in res.stderr
     assert res.returncode == 2
+
+
+@pytest.mark.skipif(not os.path.exists("/dev/full"), reason="needs /dev/full")
+def test_fflush_of_a_file_on_a_full_disk_stops_the_program_with_status_2() -> None:
+    # onetrue-awk and gawk stop at the fflush (mawk returns -1 and carries on).
+    for call in ('fflush("/dev/full")', "fflush()", 'fflush("")'):
+        res = _run_with(f'BEGIN {{ printf "x" > "/dev/full"; {call}; print "after"; exit 3 }}')
+        assert (res.stdout, res.returncode) == ("", 2), call
+        assert res.stderr.startswith("pyawk: write error on /dev/full"), call
 
 
 def test_a_command_failing_at_exit_is_not_a_write_error() -> None:
