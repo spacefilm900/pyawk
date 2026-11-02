@@ -939,6 +939,8 @@ All are covered by tests (`tests/test_io.py`, golden `environ`, `io` and
 | `nextfile` in BEGIN/END, in a function | undefined | see "Parse-time errors" | | | syntax error (majority) |
 | `cmd \| getline x + 1` | `(cmd \| getline x) + 1` (grammar) | target `x + 1`; `* / % ^` rejected | POSIX | POSIX | POSIX (see Parser) |
 | stdout flushed before every getline | not required | yes | no | no | no (majority; output order with a terminal is unaffected) |
+| `close()` of a file or of `/dev/stdout` when the last write or flush fails (e.g. `/dev/full`) | non-zero on failure | "write error on ...", exit 2 | fatal: "flush to ... failed", exit 2 | "close failed on file ...", exit 2 | -1, and the script carries on (POSIX: `close` reports the failure; consistent with `fflush`). **Split** with all three references, which stop the program |
+| output to a file still unwritten at exit fails (`printf "x" > "/dev/full"`, no `close`) | an error is implied (data is lost) | "write error on ...", exit 2 | fatal: "flush to ... failed", exit 2 | "close failed on file ...", exit 2 | "write error on NAME", exit 2 (all agree; before this the data was lost silently with exit 0) |
 | several commands still open at exit | order unspecified | | | | nondeterministic in every awk; tests close them explicitly |
 
 Left to the user: `close()` of a command returns its exit status
@@ -1022,9 +1024,12 @@ not empty decides (`pyawk/charset.py`).
   `a-z`/`A-Z`. This is byte-exact, as before.
 
 Python itself changes `LC_CTYPE` to `C.UTF-8` at start-up when the locale
-is plain C (PEP 538 "locale coercion"). pyawk detects that and undoes it,
-both for its own mode and for the environment of `system()` and pipes, so
-`LANG=C pyawk ...` really is byte mode.
+is plain C (PEP 538 "locale coercion"). On Linux pyawk detects that and
+undoes it, both for its own mode and for the environment of `system()` and
+pipes, so `LANG=C pyawk ...` really is byte mode. The detection reads the
+original environment from `/proc/self/environ`; on systems without it the
+coercion cannot be seen, so there set `LC_ALL=C` (which Python does not
+coerce) or `PYTHONCOERCECLOCALE=0` to get byte mode.
 
 **Bytes in, bytes out.** Input is decoded and output encoded with the
 mode's codec: Latin-1 in C mode (byte N is character N, so everything
