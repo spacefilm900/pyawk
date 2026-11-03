@@ -106,7 +106,7 @@ def test_newline_after_comma() -> None:
 def test_range_state_persists_across_input_files(tmp_path: Path) -> None:
     f1 = tmp_path / "f1"
     f2 = tmp_path / "f2"
-    f1.write_text("a\nb\nc\nd\n")
-    f2.write_text("e\nf\ng\n")
+    f1.write_text("a\nb\nc\nd\n", encoding="utf-8")
+    f2.write_text("e\nf\ng\n", encoding="utf-8")
     out, _ = awk("FNR == 3, /f/ { print FNR, $0 }", "", str(f1), str(f2))
     assert out == "3 c\n4 d\n1 e\n2 f\n3 g\n"

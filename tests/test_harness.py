@@ -1,6 +1,9 @@
 """Tests for the test tooling itself: awk_tests/harness.py and regen_golden.py."""
 
+import ast
 import importlib.util
+import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,8 +51,8 @@ def test_inherited_pyawk_t_variables_are_removed(monkeypatch: pytest.MonkeyPatch
 def _fake_case(tmp_path: Path, recorded: str | None) -> SimpleNamespace:
     out = tmp_path / "x.out"
     if recorded is not None:
-        out.write_text(recorded)
-    return SimpleNamespace(id="io/close_status", path=lambda ext: out, expected=lambda: out.read_text())
+        out.write_text(recorded, encoding="utf-8")
+    return SimpleNamespace(id="io/close_status", path=lambda ext: out, expected=lambda: out.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("recorded, problems", [("mawk\n", 0), ("zero\n", 1), (None, 1)])
@@ -85,7 +88,7 @@ def test_utf8_cases_run_in_a_utf8_locale(tmp_path: Path) -> None:
     # Cases in a category listed in harness.LOCALES run with that locale;
     # every other case runs with LC_ALL=C.
     for name in ("a.awk", "a.in"):
-        (tmp_path / name).write_text("")
+        (tmp_path / name).write_text("", encoding="utf-8")
     for category, expected in (("utf8", "C.UTF-8"), ("basic", "C")):
         case = harness.Case(category, "a", tmp_path)
         proc = harness.run_case(case, ["/bin/sh", "-c", 'echo "$LC_ALL"', "sh"])
@@ -94,8 +97,8 @@ def test_utf8_cases_run_in_a_utf8_locale(tmp_path: Path) -> None:
 
 def _utf8_case(tmp_path: Path, recorded: str) -> SimpleNamespace:
     out = tmp_path / "x.out"
-    out.write_text(recorded)
-    return SimpleNamespace(id="utf8/x", path=lambda ext: out, expected=lambda: out.read_text())
+    out.write_text(recorded, encoding="utf-8")
+    return SimpleNamespace(id="utf8/x", path=lambda ext: out, expected=lambda: out.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize(
@@ -133,7 +136,7 @@ def test_overridden_utf8_case_without_an_out_file_is_a_problem(
     # (CodeRabbit, PR #1).
     regen = _load_regen()
     missing = tmp_path / "x.out"  # never written
-    case = SimpleNamespace(id="utf8/x", path=lambda ext: missing, expected=lambda: missing.read_text())
+    case = SimpleNamespace(id="utf8/x", path=lambda ext: missing, expected=lambda: missing.read_text(encoding="utf-8"))
     _fake_refs(monkeypatch, regen)
     monkeypatch.setattr(regen.harness, "run_case", lambda case, cmd: SimpleNamespace(stdout="gawk\n"))
     monkeypatch.setattr(regen.harness, "read_decisions", lambda: {})
@@ -167,3 +170,105 @@ def test_regen_without_the_references_is_a_clear_error(
     assert regen.main() == 2
     err = capsys.readouterr().err
     assert "PYAWK_REF_MAWK" in err
+
+
+# An ASCII locale: LC_ALL=C, with Python's own UTF-8 fallbacks turned off
+# (PYTHONUTF8=0: no UTF-8 mode; PYTHONCOERCECLOCALE=0: C is not changed
+# to C.UTF-8).  Then a file read or written without an explicit encoding
+# uses ASCII and fails on the golden files' non-ASCII text.
+ASCII_LOCALE = {"LC_ALL": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
+
+READ_EVERY_CASE = """
+import sys
+sys.path.insert(0, "awk_tests")
+import harness
+import codecs, locale
+assert codecs.lookup(locale.getpreferredencoding(False)).name == "ascii"  # really an ASCII locale
+harness.read_overrides()
+harness.read_decisions()
+cases = harness.discover()
+for case in cases:
+    case.extra_args(), case.operands(), case.extra_env(), case.stdin_data(), case.expected()
+print(len(cases))
+"""
+
+
+def test_harness_reads_its_files_under_an_ascii_locale() -> None:
+    """golden/OVERRIDES, the .args, .environ and other case files are UTF-8
+    whatever the locale: the harness names the encoding when it reads them."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("LC_", "LANG"))} | ASCII_LOCALE
+    res = subprocess.run([sys.executable, "-c", READ_EVERY_CASE], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace", cwd=REPO, env=env)
+    assert res.returncode == 0, res.stderr
+    assert int(res.stdout) == len(harness.discover())
+
+
+def _unencoded_text_io(path: Path) -> list[str]:
+    """Calls in ``path`` that read or write text without naming an encoding:
+    ``read_text`` / ``write_text`` / ``open`` in text mode, ``bytes.decode()``
+    with no codec, and subprocess calls with ``text=True``.  Without
+    ``encoding=`` they use the locale's encoding, which may be ASCII."""
+    bad = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.Call):
+            continue
+        keywords = {k.arg: k.value for k in node.keywords}
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        kind = None
+        if "encoding" in keywords:
+            pass
+        elif name in ("read_text", "write_text"):
+            kind = name
+        elif name == "open":
+            # open(path, mode) or path.open(mode); the default mode is "r".
+            args = node.args[1:] if isinstance(func, ast.Name) else node.args
+            mode = args[0] if args else keywords.get("mode")
+            if not (isinstance(mode, ast.Constant) and "b" in mode.value):
+                kind = "open"
+        elif name == "decode" and not node.args:
+            kind = "decode"
+        elif name in ("run", "Popen", "check_output", "check_call"):
+            text = keywords.get("text") or keywords.get("universal_newlines")
+            if text is not None and not (isinstance(text, ast.Constant) and not text.value):
+                kind = f"{name}(text=True)"
+        if kind:
+            bad.append(f"{path.relative_to(REPO)}:{node.lineno}: {kind}")
+    return bad
+
+
+def test_tools_and_tests_name_the_encoding_of_their_text_files() -> None:
+    files = [REPO / "awk_tests" / "harness.py", *sorted((REPO / "scripts").glob("*.py")),
+             *sorted((REPO / "tests").glob("*.py"))]
+    bad = [line for path in files for line in _unencoded_text_io(path)]
+    assert bad == []
+
+
+TOLERANT_OUTPUT = """
+import sys
+sys.path.insert(0, "awk_tests")
+import harness
+harness.tolerant_output()
+print("caf\\u00e9")
+print("na\\u00efve", file=sys.stderr)
+"""
+
+
+def test_tolerant_output_under_an_ascii_locale() -> None:
+    """The scripts print case names, reasons and diffs, which may not be
+    ASCII (golden/OVERRIDES is not).  Under an ASCII locale such a print
+    raised UnicodeEncodeError; after harness.tolerant_output() a character
+    the terminal cannot show is written as a backslash escape instead."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("LC_", "LANG"))} | ASCII_LOCALE
+    res = subprocess.run([sys.executable, "-c", TOLERANT_OUTPUT], capture_output=True, text=True,
+                         encoding="utf-8", cwd=REPO, env=env)
+    assert (res.returncode, res.stdout, res.stderr) == (0, "caf\\xe9\n", "na\\xefve\n")
+
+
+@pytest.mark.parametrize("script", sorted(p.name for p in (REPO / "scripts").glob("*.py")
+                                          if "def main(" in p.read_text(encoding="utf-8")))
+def test_every_script_main_makes_its_output_tolerant(script: str) -> None:
+    tree = ast.parse((REPO / "scripts" / script).read_text(encoding="utf-8"))
+    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    calls = [n for n in ast.walk(main) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+    assert any(c.func.attr == "tolerant_output" for c in calls)

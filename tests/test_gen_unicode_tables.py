@@ -22,7 +22,7 @@ def _load():
 
 def _fake_gawk(directory: Path) -> Path:
     exe = directory / "gawk"
-    exe.write_text("#!/bin/sh\nexit 0\n")
+    exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     exe.chmod(0o755)
     return exe
 
@@ -90,7 +90,7 @@ def test_module_is_written_and_checked_as_utf8_in_an_ascii_locale(tmp_path: Path
         [sys.executable, "-c", _CHILD, str(REPO / "scripts" / "gen_unicode_tables.py"), str(out)],
         env=env,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
     )
     assert res.returncode == 0, res.stderr
     assert out.read_bytes() == "# gawk 5.4 \u00e9dition\n".encode("utf-8")

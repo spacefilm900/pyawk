@@ -17,7 +17,7 @@ def _cells(row: str) -> int:
 
 @pytest.mark.parametrize("doc", ["DESIGN.md", "README.md"])
 def test_table_rows_have_as_many_cells_as_their_header(doc: str) -> None:
-    lines = (REPO / doc).read_text().splitlines()
+    lines = (REPO / doc).read_text(encoding="utf-8").splitlines()
     in_code = False
     header_cells = None
     bad = []
@@ -41,7 +41,7 @@ def test_reference_rules_name_the_benchmark_exception(doc: str) -> None:
     missing reference or a PYAWK_REF_* variable that names nothing; it warns
     and times the awks it has.  It stops (exit 2) only when --awks names an
     awk it cannot find.  The docs' reference rules must say so."""
-    text = " ".join((REPO / doc).read_text().split())  # join wrapped lines
+    text = " ".join((REPO / doc).read_text(encoding="utf-8").split())  # join wrapped lines
     start = text.index("names nothing")
     passage = text[start:start + 700]
     assert "scripts/bench.py" in passage

@@ -55,6 +55,7 @@ GENERATOR_VERSION = 1
 # awks are (PYAWK_REF_* variables, then their usual names on PATH; plain
 # "awk" is never used, since it may be any of them).
 sys.path.insert(0, str(REPO / "awk_tests"))
+import harness  # noqa: E402
 import references  # noqa: E402
 
 # The reference awks we know how to time, in table order, with the
@@ -160,7 +161,7 @@ def make_input(lines: int) -> Path:
     if path.exists():
         return path
     rng = random.Random(20261101)
-    with open(path.with_suffix(".tmp"), "w") as f:
+    with open(path.with_suffix(".tmp"), "w", encoding="utf-8") as f:
         for i in range(1, lines + 1):
             extra = [rng.choice(WORDS) if rng.random() < 0.8 else str(rng.randint(0, 999))
                      for _ in range(rng.randint(2, 8))]
@@ -187,12 +188,13 @@ def time_one(cmd: list[str], runs: int, locale: str = "C") -> tuple[float, bytes
             tmp.seek(0)
             out = tmp.read()
         if proc.returncode != 0:
-            raise SystemExit(f"{' '.join(cmd[:3])}... failed: {proc.stderr.decode(errors='replace')}")
+            raise SystemExit(f"{' '.join(cmd[:3])}... failed: {proc.stderr.decode('utf-8', errors='replace')}")
         best = min(best, elapsed)
     return best, out
 
 
 def main() -> int:
+    harness.tolerant_output()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--lines", type=int, default=200_000, help="input size (default 200000)")
     ap.add_argument("--runs", type=int, default=3, help="runs per measurement; the best is kept")
@@ -220,7 +222,7 @@ def main() -> int:
     ref = next((a for a in ("mawk", "gawk", "onetrue") if a in awks), None)
     selected = [w for w in WORKLOADS if not opts.only or w.name in opts.only.split(",")]
     data = make_input(opts.lines)
-    baseline = json.loads((CACHE / f"{opts.compare}.json").read_text()) if opts.compare else None
+    baseline = json.loads((CACHE / f"{opts.compare}.json").read_text(encoding="utf-8")) if opts.compare else None
 
     results: dict[str, dict[str, float]] = {}
     header = ["workload"] + awks + ([f"pyawk/{ref}"] if "pyawk" in awks and ref else [])
@@ -249,7 +251,7 @@ def main() -> int:
         print("| " + " | ".join(cells) + " |", flush=True)
     if opts.save:
         CACHE.mkdir(exist_ok=True)
-        (CACHE / f"{opts.save}.json").write_text(json.dumps(results, indent=1))
+        (CACHE / f"{opts.save}.json").write_text(json.dumps(results, indent=1), encoding="utf-8")
     return 0
 
 

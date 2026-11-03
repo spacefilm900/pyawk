@@ -879,6 +879,17 @@ the majority wins; the splits are recorded under "I/O decisions".
 * **`DECIDED` in scripts/import_gawk.py** does the same for imported gawk
   tests: the case runs with gawk's `.ok` as the expected output, and the
   importer stops if mawk (whose answer was chosen) ever disagrees.
+* **Text files are UTF-8 whatever the locale.** The harness, every
+  script in `scripts/` and the tests name `encoding="utf-8"` on each text
+  read and write (and on subprocess pipes opened with `text=True`), so they
+  also work under an ASCII locale (`LC_ALL=C` with `PYTHONUTF8=0` and
+  `PYTHONCOERCECLOCALE=0`); `golden/OVERRIDES`, for one, is not ASCII.
+  `tests/test_harness.py` checks this twice: it reads every case file in a
+  subprocess under that locale, and it scans the sources for a text read or
+  write with no encoding. Printing is the other half: every script's
+  `main()` first calls `harness.tolerant_output()`, which makes standard
+  output and standard error write a character the locale cannot encode as
+  a backslash escape (`\xe9`) rather than fail.
 * Golden runs compare stdout only, so exit codes and error messages
   (SIGPIPE, syntax errors) are covered by unit tests in `tests/test_io.py`
   and `tests/test_parser.py`.

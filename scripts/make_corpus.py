@@ -734,14 +734,14 @@ add("one_liners", "nonempty_lines", "NF\n", TEXT)
 for (cat, name), (prog, inp, args, extras) in cases.items():
     d = os.path.join(ROOT, cat)
     os.makedirs(d, exist_ok=True)
-    with open(os.path.join(d, name + ".awk"), "w") as f:
+    with open(os.path.join(d, name + ".awk"), "w", encoding="utf-8") as f:
         f.write(prog)
-    with open(os.path.join(d, name + ".in"), "w") as f:
+    with open(os.path.join(d, name + ".in"), "w", encoding="utf-8") as f:
         f.write(inp)
     if args:
-        with open(os.path.join(d, name + ".args"), "w") as f:
+        with open(os.path.join(d, name + ".args"), "w", encoding="utf-8") as f:
             f.write(args + "\n")
     for ext, content in extras.items():
-        with open(os.path.join(d, name + ext), "w") as f:
+        with open(os.path.join(d, name + ext), "w", encoding="utf-8") as f:
             f.write(content)
 print(len(cases), "cases")

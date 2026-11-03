@@ -131,7 +131,7 @@ BEGIN { a["x"] = "abc"; print f(a), a["x"], a["n"] }"""
 
 def test_getline_into_params(tmp_path: Path) -> None:
     data = tmp_path / "d"
-    data.write_text("first\nsecond\n")
+    data.write_text("first\nsecond\n", encoding="utf-8")
     prog = (
         f'function f(a, v) {{ getline v < "{data}"; getline a["k"] < "{data}"; return v }}\n'
         'BEGIN { v = "keep"; print f(arr), arr["k"], v }'
@@ -214,7 +214,7 @@ def test_reading_a_variable_fixes_it_as_scalar() -> None:
 def test_too_many_arguments_warns_on_stderr() -> None:
     proc = subprocess.run(
         [sys.executable, "-m", "pyawk", "function g(a) { return a } BEGIN { print g(1, 2) }"],
-        capture_output=True, text=True, cwd=REPO,
+        capture_output=True, text=True, cwd=REPO, encoding="utf-8",
     )
     assert proc.stdout == "1\n"
     assert "warning" in proc.stderr and "g" in proc.stderr

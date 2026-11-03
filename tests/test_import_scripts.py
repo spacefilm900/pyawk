@@ -20,7 +20,7 @@ def _load(name: str):
 
 def _program(directory: Path, name: str) -> Path:
     exe = directory / name
-    exe.write_text("#!/bin/sh\nexit 0\n")
+    exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     exe.chmod(0o755)
     return exe
 
@@ -39,7 +39,7 @@ def bare_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _dest(tmp_path: Path, mod, monkeypatch: pytest.MonkeyPatch) -> Path:
     dest = tmp_path / "dest"
     dest.mkdir()
-    (dest / "keep.awk").write_text("BEGIN {}\n")
+    (dest / "keep.awk").write_text("BEGIN {}\n", encoding="utf-8")
     monkeypatch.setattr(mod, "DEST", dest)
     return dest
 

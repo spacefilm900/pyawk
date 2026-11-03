@@ -264,7 +264,7 @@ def test_long_count_from_the_input_is_a_clean_error() -> None:
         input="a{" + "9" * 5000 + "}\n",
         capture_output=True,
         text=True,
-        cwd=Path(__file__).resolve().parent.parent,
+        cwd=Path(__file__).resolve().parent.parent, encoding="utf-8",
     )
     assert res.returncode == 2
     assert "Traceback" not in res.stderr

@@ -22,11 +22,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "awk_tests"))
 import regex_corpus as rc  # noqa: E402
 
-RECORDS = json.loads((ROOT / "awk_tests" / "regex_differential.json").read_text())["records"]
+RECORDS = json.loads((ROOT / "awk_tests" / "regex_differential.json").read_text(encoding="utf-8"))["records"]
 # The UTF-8 corpus, recorded from onetrue-awk and gawk --posix under
 # LC_ALL=C.UTF-8 (scripts/regex_fuzz.py --utf8); its entries run in pyawk's
 # UTF-8 mode (the category names start with "utf8").
-UTF8_RECORDS = json.loads((ROOT / "awk_tests" / "regex_differential_utf8.json").read_text())["records"]
+UTF8_RECORDS = json.loads((ROOT / "awk_tests" / "regex_differential_utf8.json").read_text(encoding="utf-8"))["records"]
 
 KNOWN_FAILURES: set[str] = set()
 

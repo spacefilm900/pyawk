@@ -83,7 +83,7 @@ def test_getline_target_is_evaluated_even_at_end_of_file(tmp_path) -> None:
     # getline5: gawk and mawk evaluate ``a[++c]`` before reading, so the
     # failing (end-of-file) call still bumps c and creates the element.
     f = tmp_path / "f"
-    f.write_text("1\n")
+    f.write_text("1\n", encoding="utf-8")
     prog = (
         'BEGIN { while ((getline a[++c] < "%s") > 0) {}; print c, length(a);'
         ' getline e[++q] < "%s/missing"; print q, length(e) }' % (f, tmp_path)

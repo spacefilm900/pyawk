@@ -56,6 +56,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "awk_tests"))
+import harness  # noqa: E402
 import references  # noqa: E402
 import regex_corpus as rc  # noqa: E402
 
@@ -253,6 +254,7 @@ def verify_safety(count: int) -> int:
 
 
 def main() -> int:
+    harness.tolerant_output()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true", help="compare pyawk with the recorded file only")
     ap.add_argument("--utf8", action="store_true", help="the UTF-8 corpus, in a UTF-8 locale (no mawk)")
@@ -281,12 +283,12 @@ def run(args: argparse.Namespace) -> int:
         return 0
     results = UTF8_RESULTS if args.utf8 else RESULTS
     if args.check:
-        data = json.loads(results.read_text())
+        data = json.loads(results.read_text(encoding="utf-8"))
     else:
         data = regenerate(rc.utf8_corpus() if args.utf8 else rc.corpus(), args.jobs, args.utf8)
         # ensure_ascii=True writes non-ASCII as \uXXXX escapes, which keeps the
         # invalid-byte stand-ins (lone surrogates) storable in a UTF-8 file.
-        results.write_text(json.dumps(data, indent=1, ensure_ascii=args.utf8) + "\n")
+        results.write_text(json.dumps(data, indent=1, ensure_ascii=args.utf8) + "\n", encoding="utf-8")
         n_split = sum(1 for r in data["records"] for e in r["expected"] if e is None)
         print(f"wrote {results.relative_to(ROOT)}: {len(data['records'])} patterns, {n_split} split lines")
     # The exit status tells scripts whether pyawk matched the record:

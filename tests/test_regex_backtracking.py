@@ -58,6 +58,7 @@ def timed(pattern: str, line: str, limit: float = 30.0) -> tuple[float, list[str
         input=line + "\n",
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=limit,  # a hang becomes subprocess.TimeoutExpired, a failure
     )
     assert proc.returncode == 0, proc.stderr
@@ -239,7 +240,8 @@ def test_regex_rs_on_long_input_is_linear() -> None:
     prog = 'BEGIN { RS = "(a*)*b" } { n++; len += length($0) } END { print n, len }'
     for data, want in (("a" * 100_000, "1 100000"), (("c" * 999 + "b") * 100, "100 99900")):
         proc = subprocess.run(
-            [sys.executable, "-m", "pyawk", prog], input=data, capture_output=True, text=True, timeout=30, cwd=ROOT
+            [sys.executable, "-m", "pyawk", prog], input=data, capture_output=True, text=True, timeout=30, cwd=ROOT,
+            encoding="utf-8",
         )
         assert proc.stdout.strip() == want, proc.stderr
 

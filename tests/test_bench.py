@@ -36,7 +36,7 @@ def fake_which(installed: dict[str, str]):
 
 
 def test_no_machine_specific_paths() -> None:
-    text = (REPO / "scripts" / "bench.py").read_text()
+    text = (REPO / "scripts" / "bench.py").read_text(encoding="utf-8")
     assert "/workspace" not in text
     assert "/usr/bin/awk" not in text
 
@@ -58,7 +58,7 @@ def test_gawk_runs_in_posix_mode_and_onetrue_by_its_names(monkeypatch: pytest.Mo
 def test_explicit_paths_override_lookup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(shutil, "which", fake_which({}))
     fake = tmp_path / "a.out"
-    fake.write_text("")
+    fake.write_text("", encoding="utf-8")
     awks = bench.find_awks({"onetrue": str(fake)})
     assert awks["onetrue"] == [str(fake)]
 

@@ -46,7 +46,8 @@ def test_environ_is_an_array_name() -> None:
 def pyawk_process(prog: str, **kwargs: Any) -> subprocess.Popen[str]:
     """Start ``python -m pyawk prog`` as a real process (stdout piped)."""
     return subprocess.Popen(
-        [sys.executable, "-m", "pyawk", prog], stdout=subprocess.PIPE, text=True, cwd=REPO, **kwargs
+        [sys.executable, "-m", "pyawk", prog], stdout=subprocess.PIPE, text=True, cwd=REPO, **kwargs,
+        encoding="utf-8",
     )
 
 
@@ -119,7 +120,7 @@ def three_files(tmp_path: Path) -> list[str]:
     names = []
     for name, lines in (("a", 3), ("b", 2), ("c", 3)):
         path = tmp_path / name
-        path.write_text("".join(f"{name}{i}\n" for i in range(1, lines + 1)))
+        path.write_text("".join(f"{name}{i}\n" for i in range(1, lines + 1)), encoding="utf-8")
         names.append(str(path))
     return names
 
@@ -257,9 +258,10 @@ def test_fflush_on_full_disk_gives_minus_one_then_a_clean_write_error() -> None:
     # onetrue-awk); the final flush at exit is a write error with status 2
     # (onetrue-awk and gawk), never a Python traceback.
     prog = 'BEGIN { printf "x"; r = fflush("/dev/stdout"); printf "y"; s = fflush(); print r, s > "/dev/stderr" }'
-    with open("/dev/full", "w") as full:
+    with open("/dev/full", "w", encoding="utf-8") as full:
         res = subprocess.run(
-            [sys.executable, "-m", "pyawk", prog], stdout=full, stderr=subprocess.PIPE, text=True, cwd=REPO
+            [sys.executable, "-m", "pyawk", prog], stdout=full, stderr=subprocess.PIPE, text=True, cwd=REPO,
+            encoding="utf-8",
         )
     assert res.stderr.splitlines()[0] == "-1 -1"
     assert "Traceback" not in res.stderr
@@ -344,7 +346,8 @@ def _run_with(
     prog: str, stdout: Any = subprocess.PIPE, stderr: Any = subprocess.PIPE
 ) -> subprocess.CompletedProcess[str]:
     """Run ``python -m pyawk prog`` as a real process."""
-    return subprocess.run([sys.executable, "-m", "pyawk", prog], stdout=stdout, stderr=stderr, text=True, cwd=REPO)
+    return subprocess.run([sys.executable, "-m", "pyawk", prog], stdout=stdout, stderr=stderr, text=True,
+                          encoding="utf-8", cwd=REPO)
 
 
 @pytest.mark.skipif(not os.path.exists("/dev/full"), reason="needs /dev/full")
@@ -362,7 +365,7 @@ def test_close_on_a_full_disk_stops_the_program_with_status_2() -> None:
 def test_close_dev_stdout_on_a_full_disk_stops_the_program_with_status_2() -> None:
     # Standard output is /dev/full.  onetrue-awk and mawk stop at the close;
     # only gawk --posix warns and carries on.
-    with open("/dev/full", "w") as full:
+    with open("/dev/full", "w", encoding="utf-8") as full:
         prog = 'BEGIN { printf "x" > "/dev/stdout"; close("/dev/stdout"); print "after" > "/dev/stderr"; exit 3 }'
         res = _run_with(prog, stdout=full)
     assert len(res.stderr.splitlines()) == 1  # "after" never printed
@@ -379,7 +382,7 @@ def test_a_file_that_cannot_be_written_at_exit_is_a_write_error() -> None:
         [sys.executable, "-m", "pyawk", 'BEGIN { printf "x" > "/dev/full"; print "done" }'],
         capture_output=True,
         text=True,
-        cwd=REPO,
+        cwd=REPO, encoding="utf-8",
     )
     assert res.stdout == "done\n"
     assert "write error on /dev/full" in res.stderr
@@ -413,7 +416,7 @@ def test_fflush_of_a_file_on_a_full_disk_stops_the_program_with_status_2() -> No
 )
 def test_unwritable_stderr_gives_status_2(prog: str, tmp_path: Path) -> None:
     out = tmp_path / "out"
-    with open("/dev/full", "w") as full:
+    with open("/dev/full", "w", encoding="utf-8") as full:
         res = _run_with(f'BEGIN {{ OUT = "{out}"; {prog} }}', stderr=full)
     assert res.returncode == 2
     assert not out.exists()  # the program stopped at the failure

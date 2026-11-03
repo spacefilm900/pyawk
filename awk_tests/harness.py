@@ -70,6 +70,20 @@ CATEGORIES = (
 LOCALES = {"utf8": "C.UTF-8"}
 
 
+def tolerant_output() -> None:
+    """Never fail to print because of the locale.
+
+    The scripts print case names, reasons and diffs, which may contain
+    non-ASCII text (golden/OVERRIDES does).  Python encodes standard output
+    and standard error with the locale's encoding, so under an ASCII locale
+    such a print raised UnicodeEncodeError.  ``reconfigure`` keeps the
+    encoding but writes a character it cannot encode as a backslash escape
+    (``\\xe9`` for "é").  Every script's ``main()`` calls this first.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(errors="backslashreplace")
+
+
 def locale_for(case_id: str) -> str:
     """The LC_ALL value for the case ``CATEGORY/NAME``."""
     # ``partition("/")[0]`` is the text before the first "/": the category.
@@ -113,12 +127,12 @@ class Case:
 
     def extra_args(self) -> list[str]:
         p = self.path(".args")
-        return shlex.split(p.read_text()) if p.exists() else []
+        return shlex.split(p.read_text(encoding="utf-8")) if p.exists() else []
 
     def operands(self) -> list[str]:
         """The input files to name on the command line (usually just .in)."""
         p = self.path(".operands")
-        return shlex.split(p.read_text()) if p.exists() else [f"{self.name}.in"]
+        return shlex.split(p.read_text(encoding="utf-8")) if p.exists() else [f"{self.name}.in"]
 
     def stdin_data(self) -> str | None:
         """What to feed on standard input (from ``.stdin``), or None for nothing."""
@@ -134,7 +148,7 @@ class Case:
         p = self.path(".environ")
         if not p.exists():
             return {}
-        pairs = (line.partition("=") for line in p.read_text().splitlines() if line.strip())
+        pairs = (line.partition("=") for line in p.read_text(encoding="utf-8").splitlines() if line.strip())
         return {name: value for name, _, value in pairs}
 
     @property
@@ -165,7 +179,7 @@ def read_manifest(directory: Path) -> dict[str, tuple[str, str]]:
     result: dict[str, tuple[str, str]] = {}
     if not p.exists():
         return result
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8").splitlines():
         if not line or line.startswith("#") or line.startswith("name\t"):
             continue  # blank, comment or the header row
         name, status, reason, *_rest = line.split("\t")
@@ -179,7 +193,7 @@ def read_known_failures(directory: Path) -> set[str]:
     if not p.exists():
         return set()
     # A set comprehension; ``partition("#")[0]`` is the text before any "#".
-    names = {line.partition("#")[0].strip() for line in p.read_text().splitlines()}
+    names = {line.partition("#")[0].strip() for line in p.read_text(encoding="utf-8").splitlines()}
     return names - {""}
 
 
@@ -211,7 +225,7 @@ def _read_case_list(p: Path) -> dict[str, str]:
     if not p.exists():
         return {}
     out: dict[str, str] = {}
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8").splitlines():
         line = line.partition("#")[0].strip()
         if line:
             # ``split(None, 1)`` splits once, on the first run of whitespace.

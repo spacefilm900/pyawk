@@ -37,7 +37,7 @@ def test_exit_status() -> None:
 
 def test_v_assignment_and_operand_assignment(tmp_path: Path) -> None:
     f = tmp_path / "data"
-    f.write_text("1\n2\n")
+    f.write_text("1\n2\n", encoding="utf-8")
     out, _ = awk("{ print x, $0 }", "", "x=A", str(f), "x=B", str(f), assignments=[("x", "v")])
     assert out == "A 1\nA 2\nB 1\nB 2\n"
     assert awk("BEGIN { print x + 1 }", assignments=[("x", "41")])[0] == "42\n"
@@ -201,19 +201,20 @@ def test_stacked_repetition_operators(expr: str, expected: str) -> None:
 
 def test_cli_options(tmp_path: Path) -> None:
     prog = tmp_path / "p.awk"
-    prog.write_text("{ print $2 }\n")
+    prog.write_text("{ print $2 }\n", encoding="utf-8")
     data = tmp_path / "d"
-    data.write_text("a:b:c\n")
+    data.write_text("a:b:c\n", encoding="utf-8")
     proc = subprocess.run(
         [sys.executable, "-m", "pyawk", "-F:", "-v", "x=1", "-f", str(prog), str(data)],
-        capture_output=True, text=True, cwd=REPO,
+        capture_output=True, text=True, cwd=REPO, encoding="utf-8",
     )
     assert proc.returncode == 0 and proc.stdout == "b\n"
 
 
 def test_cli_syntax_error_exit_code() -> None:
     proc = subprocess.run(
-        [sys.executable, "-m", "pyawk", "BEGIN {"], capture_output=True, text=True, cwd=REPO
+        [sys.executable, "-m", "pyawk", "BEGIN {"], capture_output=True, text=True, cwd=REPO,
+        encoding="utf-8",
     )
     assert proc.returncode == 2 and "syntax error" in proc.stderr
 
@@ -221,7 +222,7 @@ def test_cli_syntax_error_exit_code() -> None:
 def test_print_to_file(tmp_path: Path) -> None:
     target = tmp_path / "out.txt"
     awk(f'BEGIN {{ print "a" > "{target}"; print "b" > "{target}"; close("{target}"); print "c" >> "{target}" }}')
-    assert target.read_text() == "a\nb\nc\n"
+    assert target.read_text(encoding="utf-8") == "a\nb\nc\n"
 
 
 def test_compound_assignment_evaluates_rhs_first() -> None:
@@ -278,7 +279,7 @@ def test_undefined_escape_in_dynamic_regex() -> None:
 def test_undefined_escape_in_command_line_assignments(tmp_path: Path) -> None:
     """-v and operand assignments get the same escape processing."""
     f = tmp_path / "data"
-    f.write_text("x\n")
+    f.write_text("x\n", encoding="utf-8")
     prog = '{ s = "foo"; sub(/o/, w, s); print v, w, length(w), s, ("axb" ~ d) }'
     out, _ = awk(prog, "", r"w=\&", r"d=a\.b", str(f), assignments=[("v", r"\q")])
     assert out == "q & 1 foo 1\n"
@@ -517,9 +518,10 @@ def test_absurdly_nested_program_is_a_clean_error(tmp_path: Path) -> None:
     # never a Python traceback.  (The program is too long for a command-line
     # argument, so it goes in a file for -f.)
     prog = tmp_path / "deep.awk"
-    prog.write_text(f"BEGIN {{ print {_parens(100_000)} }}")
+    prog.write_text(f"BEGIN {{ print {_parens(100_000)} }}", encoding="utf-8")
     proc = subprocess.run(
-        [sys.executable, "-m", "pyawk", "-f", str(prog)], cwd=REPO, capture_output=True, text=True, timeout=120,
+        [sys.executable, "-m", "pyawk", "-f", str(prog)], cwd=REPO, capture_output=True, text=True, encoding="utf-8",
+        timeout=120,
     )
     assert proc.returncode == 2
     assert proc.stderr.startswith("pyawk: ")

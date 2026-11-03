@@ -38,6 +38,7 @@ OUT = ROOT / "pyawk" / "unicode_tables.py"
 
 # awk_tests/references.py says where the reference gawk is.
 sys.path.insert(0, str(ROOT / "awk_tests"))
+import harness  # noqa: E402
 import references  # noqa: E402
 CLASSES = ["alpha", "digit", "alnum", "upper", "lower", "space", "blank", "punct", "xdigit", "cntrl", "print", "graph"]
 
@@ -118,7 +119,7 @@ def ask_gawk(gawk: str) -> tuple[dict[str, list[int]], dict[int, int], dict[int,
     assert len(flags) == len(upper) == len(lower) == len(CODE_POINTS), "gawk output out of step"
     members: dict[str, list[int]] = {name: [] for name in CLASSES}
     for c, f in zip(CODE_POINTS, flags):
-        for letter in f.decode():
+        for letter in f.decode("utf-8"):
             members[LETTERS[letter]].append(c)
     # "\n" (left out above) is a space and a control character.
     for name in ("space", "cntrl"):
@@ -178,6 +179,7 @@ def default_gawk() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    harness.tolerant_output()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--gawk", default=None, help="the gawk to ask (default: gawk on PATH)")
     ap.add_argument("--check", action="store_true", help="compare with the committed module, do not write")

@@ -26,7 +26,7 @@ import references  # noqa: E402
 def _program(directory: Path, name: str) -> Path:
     """A tiny executable stand-in for an awk."""
     exe = directory / name
-    exe.write_text("#!/bin/sh\nexit 0\n")
+    exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     exe.chmod(0o755)
     return exe
 
@@ -59,7 +59,7 @@ def test_variable_names_do_not_clash_with_the_harness_test_variables() -> None:
 
 def test_harness_keeps_the_reference_variables(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     for name in ("a.awk", "a.in"):
-        (tmp_path / name).write_text("")
+        (tmp_path / name).write_text("", encoding="utf-8")
     monkeypatch.setenv("PYAWK_REF_GAWK", "/opt/gawk")
     proc = harness.run_case(harness.Case("basic", "a", tmp_path), ["/bin/sh", "-c", "env", "sh"])
     assert "PYAWK_REF_GAWK=/opt/gawk" in proc.stdout
@@ -207,7 +207,7 @@ def _require(name: str) -> list[str]:
 def test_reference_runs(name: str) -> None:
     cmd = _require(name)
     proc = subprocess.run([*cmd, "BEGIN { print 1 + 2 }"], capture_output=True, text=True, timeout=30,
-                          env={**os.environ, "LC_ALL": "C"})
+                          env={**os.environ, "LC_ALL": "C"}, encoding="utf-8")
     assert (proc.returncode, proc.stdout) == (0, "3\n")
 
 

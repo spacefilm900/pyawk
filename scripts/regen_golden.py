@@ -152,6 +152,7 @@ def vote_utf8(case: harness.Case, overrides: dict[str, str]) -> int:
 
 
 def main() -> int:
+    harness.tolerant_output()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--awk", help="awk command to use instead of mawk (and gawk for utf8 cases)")
     ap.add_argument("--check", action="store_true", help="only compare, do not write")

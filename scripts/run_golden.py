@@ -33,6 +33,7 @@ import harness  # noqa: E402
 
 
 def main() -> int:
+    harness.tolerant_output()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-v", "--verbose", action="store_true", help="list every case")
     ap.add_argument("--diff", action="store_true", help="show a diff for failures")
@@ -94,7 +95,7 @@ def main() -> int:
                 continue
             path = directory / "KNOWN_FAILURES"
             lines = [f"# {cat} cases pyawk currently fails; written by scripts/run_golden.py --write-known-failures"]
-            path.write_text("\n".join([*lines, *failed[cat]]) + "\n")
+            path.write_text("\n".join([*lines, *failed[cat]]) + "\n", encoding="utf-8")
             print(f"wrote {len(failed[cat])} names to {path}")
     return 1 if total_f else 0
 
