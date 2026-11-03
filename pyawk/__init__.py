@@ -1,4 +1,4 @@
-"""pyawk: a POSIX-compatible AWK interpreter (subset v0.1) written in Python.
+"""pyawk: a POSIX-compatible AWK interpreter written in Python.
 
 The interpreter is a classic pipeline; each stage lives in its own module:
 
@@ -15,4 +15,4 @@ A file named ``__init__.py`` marks a directory as a Python *package*; its
 contents run when the package is first imported.
 """
 
-__version__ = "0.1.0"
+__version__ = "1.1.0"

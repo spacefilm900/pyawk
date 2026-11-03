@@ -47,3 +47,24 @@ def test_reference_rules_name_the_benchmark_exception(doc: str) -> None:
     assert "scripts/bench.py" in passage
     assert "warns" in passage
     assert "--awks" in passage
+
+
+def test_package_metadata() -> None:
+    """The licence, author and version are the same everywhere: an MIT
+    LICENSE file naming Keith Haviland, pyproject.toml's metadata (version
+    equal to pyawk.__version__, no stale "subset v0.1" description) and the
+    README's licence line."""
+    import tomllib  # the standard TOML reader (Python 3.11+)
+
+    import pyawk
+
+    licence = (REPO / "LICENSE").read_text(encoding="utf-8")
+    assert licence.startswith("MIT License\n")
+    assert "Copyright (c) 2026 Keith Haviland" in licence
+    project = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert project["version"] == pyawk.__version__ == "1.1.0"
+    assert project["authors"] == [{"name": "Keith Haviland"}]
+    assert project["license"] == {"text": "MIT"}
+    assert "subset" not in project["description"] and "v0.1" not in project["description"]
+    readme = " ".join((REPO / "README.md").read_text(encoding="utf-8").split())
+    assert "MIT, copyright (c) 2026 Keith Haviland; see [LICENSE](LICENSE)." in readme

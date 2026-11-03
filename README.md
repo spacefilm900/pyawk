@@ -205,3 +205,7 @@ roughly 4–15× slower than mawk. Tables and details are in DESIGN.md
 
 See [DESIGN.md](DESIGN.md) for architecture, semantics decisions and the list
 of places where mawk (the reference used for `.out`) differs from POSIX.
+
+## License
+
+MIT, copyright (c) 2026 Keith Haviland; see [LICENSE](LICENSE).

@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyawk"
-version = "0.1.0"
-description = "A POSIX-compatible AWK interpreter (subset v0.1) in pure Python"
+version = "1.1.0"
+description = "A POSIX-compatible AWK interpreter in pure Python"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
+authors = [{ name = "Keith Haviland" }]
 
 [project.optional-dependencies]
 test = ["pytest>=7", "ruff"]
