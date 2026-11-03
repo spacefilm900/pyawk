@@ -11,6 +11,7 @@ from pyawk.builtins import format_printf, substitute, substr
 from pyawk.cli import run
 from pyawk.errors import AwkRuntimeError
 from pyawk.regex import compile_ere
+from pyawk.values import UNINIT, StrNum
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -68,6 +69,32 @@ def test_single_char_rs() -> None:
 def test_division_by_zero() -> None:
     with pytest.raises(AwkRuntimeError):
         awk("BEGIN { print 1 / 0 }")
+
+
+def test_printf_c_of_a_numeric_string_or_unset_value_uses_the_number() -> None:
+    """POSIX: %c of a numeric value is the character with that code, and a
+    numeric string (a field "65") and the uninitialized value (0) are
+    numeric; a string constant, or input that does not look numeric, gives
+    its first character.  A missing argument still gives nothing.  gawk,
+    gawk --posix, mawk, onetrue-awk and hawk agree (pyawk v1.1 printed
+    "6" and nothing)."""
+    args = [StrNum("65", 65.0), StrNum(" 1e2 ", 100.0), "65", "65abc", UNINIT, UNINIT]
+    assert format_printf("%c|%c|%c|%c|%c|%3c|%c", args) == "A|d|6|6|\0|  \0|"
+
+
+@pytest.mark.parametrize("prog, data, want", [
+    ('{ printf "[%c][%c][%-3c][%c]", $1, $2, $3, $4 }', "65 321 66 65abc\n", "[A][A][B  ][6]"),
+    ('BEGIN { printf "[%c][%5c][%c]", u, u }', "", "[\0][    \0][]"),
+    ('{ s = sprintf("%c%c", $1, u); printf "%d:%s", length(s), s }', "65\n", "2:A\0"),
+    ('{ split($0, a); "echo 68" | getline g; printf "[%c][%c][%c][%c]", a[2], v, g, $1 "" }', "x 66\n",
+     "[B][C][D][x]"),
+    # A field past NF is the empty string here, not the uninitialized value
+    # (see get_field): it prints nothing (onetrue-awk, hawk; gawk and mawk
+    # print a NUL byte).
+    ('{ printf "[%c]", $9 }', "65\n", "[]"),
+])
+def test_printf_c_of_numeric_input(prog: str, data: str, want: str) -> None:
+    assert awk(prog, data, assignments=[("v", "67")]) == (want, 0)
 
 
 def test_printf_formats() -> None:

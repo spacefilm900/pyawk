@@ -158,6 +158,14 @@ CASES = [
         b"[ \xc3\xa9a][\xc3][\xc3\xa9 ]\n",
     ),
     ('BEGIN { printf "%c%c%c\\n", 233, "\xc3\xa9x", 9786 }', b"", b"\xc3\xa9\xc3\xa9\xe2\x98\xba\n", b"\xe9\xc3:\n"),
+    # %c of a numeric field or an unset variable uses the number (POSIX;
+    # gawk, onetrue-awk, hawk; mawk works on bytes in both modes).
+    (
+        '{ printf "[%c][%c][%3c][%c]\\n", $1, $2, $2, u }',
+        b"233 321\n",
+        b"[\xc3\xa9][\xc5\x81][  \xc5\x81][\x00]\n",
+        b"[\xe9][A][  A][\x00]\n",
+    ),
     (
         '{ print toupper($0), tolower("\xc3\x80B") }',
         b"\xc3\xa9a\xc3\x9f\n",

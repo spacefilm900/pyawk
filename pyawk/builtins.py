@@ -245,8 +245,25 @@ def format_printf(fmt: str, args: list[Value], convfmt: str = "%.6g") -> str:
             p = _to_c_int(to_num(args[argi] if argi < nargs else UNINIT))
             argi += 1
             prec = str(p) if p >= 0 else None
-        v = args[argi] if argi < nargs else UNINIT  # the argument to format
+        # The argument to format; None when the arguments have run out.
+        v = args[argi] if argi < nargs else None
         argi += 1
+        if conv == "c":
+            # %c of a number is the character with that code (a byte in the
+            # C locale; see charset.char_for_code); of a string, its first
+            # character.  A numeric string (a field "65") counts as a number,
+            # as POSIX says, and so does the uninitialized value (0: a NUL);
+            # only a missing argument gives nothing.
+            if type(v) is float:
+                ch = charset.char_for_code(_to_c_int(v))
+            elif type(v) is StrNum:  # UNINIT is the StrNum ("", 0)
+                ch = charset.char_for_code(_to_c_int(v.n))
+            else:
+                ch = to_str(v, convfmt)[:1] if v is not None else ""
+            out.append(("%" + flags.replace("0", "") + (width or "") + "s") % ch)
+            continue
+        if v is None:
+            v = UNINIT  # other conversions treat a missing argument as unset
         if conv in "diouxX":
             n = _to_c_int(v if type(v) is float else to_num(v))
             if pyfmt is not None and (n >= 0 or conv in "di"):
@@ -264,15 +281,6 @@ def format_printf(fmt: str, args: list[Value], convfmt: str = "%.6g") -> str:
             else:
                 spec = "%" + flags + (width or "") + ("." + prec if prec is not None else "")
                 out.append((spec + conv) % x)
-        elif conv == "c":
-            # %c of a number is the character with that code (a byte in the
-            # C locale; see charset.char_for_code); of a string, its first
-            # character.
-            if type(v) is float:
-                ch = charset.char_for_code(_to_c_int(v))
-            else:
-                ch = to_str(v, convfmt)[:1]
-            out.append(("%" + flags.replace("0", "") + (width or "") + "s") % ch)
         elif conv == "s":
             text = v if type(v) is str else to_str(v, convfmt)
             if pyfmt is not None:

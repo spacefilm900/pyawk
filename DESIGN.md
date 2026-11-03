@@ -270,6 +270,19 @@ misuse (`x = 1; x[1] = 2`, a local array assigned as a scalar).
   redirections are closed first and stdout flushed after (matches mawk's
   observable order). The full I/O behaviour is in "ENVIRON, I/O and
   nextfile" below.
+* printf `%c`: a number, or a numeric string (a field, a `split()`
+  element, `getline` input, `-v`, `ENVIRON`...), prints the character with
+  that code, as POSIX says ("if the argument has a numeric value"): a
+  field `65` gives `A`, `1e2` gives `d`, `+66` gives `B`, and in UTF-8
+  mode `233` gives `é`. A plain string (`"65"`, `$1 ""`, a field `65abc`)
+  gives its first character. An unset variable is a number too, so `%c`
+  gives NUL and `%3c` two spaces and NUL. gawk (also `--posix`), mawk,
+  onetrue-awk and hawk all agree; pyawk 1.1 printed the first character
+  of the text (`6`). Two edges follow existing decisions: a field past
+  `NF` is the empty string (see Values), so it prints nothing
+  (onetrue-awk, hawk; gawk and mawk print NUL), and a missing argument
+  prints nothing (hawk; the others stop with an error). Golden case
+  `builtins/printf_c_strnum`.
 * Arithmetic: division/modulo by zero is a runtime error (like all awks);
   `%` is C `fmod`; `^` overflows to inf.
 
