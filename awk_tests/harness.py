@@ -37,7 +37,8 @@ Two more files are available to every case (used by the ``environ``, ``io``
 and ``nextfile`` golden categories):
 
 * ``<name>.environ`` (optional): ``NAME=value`` lines added to the
-  environment the awk runs with, so ENVIRON tests see known values.
+  environment the awk runs with, so ENVIRON tests see known values (blank
+  lines are skipped; any other line without a name and "=" is an error).
 * Golden cases (the categories under ``golden/``) run in a *throwaway copy*
   of their category directory, made fresh for every run and deleted
   afterwards.  A program may therefore create, append to and read back
@@ -144,12 +145,29 @@ class Case:
         return [*awk, *self.extra_args(), "-f", f"{self.name}.awk", *self.operands()]
 
     def extra_env(self) -> dict[str, str]:
-        """Environment variables from ``<name>.environ`` (``NAME=value`` lines)."""
+        """Environment variables from ``<name>.environ`` (``NAME=value`` lines).
+
+        The value is everything after the first "=" (it may be empty or
+        contain spaces); blank lines are skipped.  A line with no "=" or
+        with nothing before it is a mistake in the case, so it raises
+        ValueError naming the file, the line number and the line.
+        """
         p = self.path(".environ")
         if not p.exists():
             return {}
-        pairs = (line.partition("=") for line in p.read_text(encoding="utf-8").splitlines() if line.strip())
-        return {name: value for name, _, value in pairs}
+        result: dict[str, str] = {}
+        # ``enumerate(..., 1)`` numbers the lines from 1, as editors do.
+        for number, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            # ``partition`` splits at the first "="; ``equals`` is "" when
+            # there is none.
+            name, equals, value = line.partition("=")
+            if not equals or not name:
+                # ``{line!r}`` shows the line quoted, as Python writes it.
+                raise ValueError(f"{p}:{number}: not NAME=value: {line!r}")
+            result[name] = value
+        return result
 
     @property
     def sandboxed(self) -> bool:

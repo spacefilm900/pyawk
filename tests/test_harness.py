@@ -272,3 +272,27 @@ def test_every_script_main_makes_its_output_tolerant(script: str) -> None:
     main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
     calls = [n for n in ast.walk(main) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
     assert any(c.func.attr == "tolerant_output" for c in calls)
+
+
+def _case_with_environ(tmp_path: Path, text: str) -> harness.Case:
+    (tmp_path / "t.environ").write_text(text, encoding="utf-8")
+    return harness.Case("environ", "t", tmp_path)
+
+
+def test_environ_file_valid_lines(tmp_path: Path) -> None:
+    """``NAME=value`` lines: the value is everything after the first "=",
+    spaces included, and may be empty; blank lines are skipped."""
+    case = _case_with_environ(tmp_path, "A=1\n\nB=\nC= x=y \n   \n")
+    assert case.extra_env() == {"A": "1", "B": "", "C": " x=y "}
+
+
+@pytest.mark.parametrize("text, bad", [("A=1\nLC_ALL\n", 2), ("=v\n", 1)])
+def test_environ_file_malformed_line_is_an_error(tmp_path: Path, text: str, bad: int) -> None:
+    """A line with no "=" (it used to set the variable to "") or an empty
+    name (it used to set a variable called "") is a mistake in the case:
+    the error names the file, the line number and the line."""
+    case = _case_with_environ(tmp_path, text)
+    line = text.splitlines()[bad - 1]
+    with pytest.raises(ValueError) as info:
+        case.extra_env()
+    assert str(info.value) == f"{tmp_path / 't.environ'}:{bad}: not NAME=value: {line!r}"

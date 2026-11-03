@@ -854,7 +854,8 @@ the majority wins; the splits are recorded under "I/O decisions".
   its category directory, so a program may create, append to and read back
   files with relative names without touching the repository.
 * **Optional per-case files.** `NAME.environ` (`NAME=value` lines added to
-  the environment), `NAME.operands` (the operands to use instead of
+  the environment; blank lines are skipped, and a line with no `=` or an
+  empty name is an error naming the file, line number and text), `NAME.operands` (the operands to use instead of
   `NAME.in`; may name other cases' `.in` files and `-`), `NAME.stdin`
   (standard input). `scripts/make_corpus.py` writes them all.
 * **Where the reference awks are.** `awk_tests/references.py` is the one
