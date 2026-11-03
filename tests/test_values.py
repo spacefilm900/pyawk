@@ -1,5 +1,7 @@
 import math
 
+from pyawk import charset
+
 from pyawk.values import (
     UNINIT,
     StrNum,
@@ -72,3 +74,26 @@ def test_compare_semantics() -> None:
     assert compare(StrNum("10.0", 10.0), "10") != 0  # string vs strnum -> string
     assert compare(UNINIT, 0.0) == 0 and compare(UNINIT, "") == 0
     assert compare("abc", 9.0) > 0
+
+
+def test_compare_strings_by_bytes_in_utf8_mode() -> None:
+    # An invalid byte is held as U+DC80..U+DCFF (surrogateescape); by code
+    # point it would sort after "é", but awk compares bytes: \x80 < \xc3.
+    samples = ["", "a", "z", "\x7f", "é", "ÿ", "Ł", "一", "\ue000", "\uffff", "😀"]
+    bad = ["\udc80", "\udcc3", "\udcff", "a\udc80", "\udcc3z"]
+    charset.set_mode(True)
+    try:
+        assert compare("\udc80", "é") < 0 and compare("é", "\udc80") > 0
+        assert compare("\udcc3", "é") < 0  # a prefix of é's bytes
+        assert compare("\udcff", "😀") > 0
+        assert compare("\udc80", "\udc80") == 0
+        for x in samples + bad:
+            for y in samples + bad:
+                bx, by = (v.encode("utf-8", "surrogateescape") for v in (x, y))
+                assert compare(x, y) == (bx > by) - (bx < by), (x, y)
+        for x in samples:  # valid UTF-8: code-point order, unchanged
+            for y in samples:
+                assert compare(x, y) == (x > y) - (x < y), (x, y)
+    finally:
+        charset.set_mode(False)
+    assert compare("\x80", "é") < 0  # C mode: Latin-1, one character per byte

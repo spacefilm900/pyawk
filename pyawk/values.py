@@ -30,6 +30,8 @@ import math
 import re
 from typing import Union
 
+from . import charset
+
 __all__ = [
     "StrNum",
     "UNINIT",
@@ -189,7 +191,7 @@ def compare(a: Value, b: Value, convfmt: str = "%.6g") -> int:
 
     Returns -1, 0 or 1 (less, equal, greater).  This is the strnum rule: a
     field holding ``10`` is greater than one holding ``9.5`` (numbers), but the
-    string constant ``"10"`` is less than ``"9"`` (character by character).
+    string constant ``"10"`` is less than ``"9"`` (byte by byte).
     """
     # Numbers and strnums both count as numeric; any plain string forces a
     # string comparison, converting numbers with CONVFMT.
@@ -197,8 +199,8 @@ def compare(a: Value, b: Value, convfmt: str = "%.6g") -> int:
         x = to_num(a)
         y = to_num(b)
     else:
-        x = to_str(a, convfmt)  # type: ignore[assignment]
-        y = to_str(b, convfmt)  # type: ignore[assignment]
+        # By bytes, also in UTF-8 mode (see charset.byte_order).
+        x, y = charset.byte_order(to_str(a, convfmt), to_str(b, convfmt))  # type: ignore[assignment]
     if x < y:
         return -1
     if x > y:

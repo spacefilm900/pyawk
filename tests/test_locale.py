@@ -166,6 +166,19 @@ CASES = [
         b"[\xc3\xa9][\xc5\x81][  \xc5\x81][\x00]\n",
         b"[\xe9][A][  A][\x00]\n",
     ),
+    # String comparison is by bytes (all references): an invalid byte such
+    # as \200 sorts before the bytes of é (\303\251), a lone \303 before
+    # é, \377 after any valid UTF-8, while valid UTF-8 keeps code-point order.
+    (
+        'BEGIN { e = "\\303\\251"; print ("\\200" < e), ("\\303" < e), ("\\377" < "\\360\\220\\200\\200"),'
+        ' ("\\200" > e), ("\\200x" >= e), ("\\200" <= e), ("a" < e), (e < "\\344\\270\\200"), ("\\200" == "\\200") }',
+        b"",
+        b"1 1 0 0 0 1 1 1 1\n",
+        b"1 1 0 0 0 1 1 1 1\n",
+    ),
+    ("{ print ($1 < $2), ($2 < $1), ($1 < $3), ($3 < $1) }", b"\x80 \xc3\xa9 \xff\n", b"1 0 1 0\n", b"1 0 1 0\n"),
+    # A string against a number constant converts the number with CONVFMT.
+    ('BEGIN { CONVFMT = "\\200%.1f" } { print ($1 < 0.5), ($2 < 0.5) }', b"\xc3\xa9 \x7f\n", b"0 1\n", b"0 1\n"),
     (
         '{ print toupper($0), tolower("\xc3\x80B") }',
         b"\xc3\xa9a\xc3\x9f\n",

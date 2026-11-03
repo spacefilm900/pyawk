@@ -160,6 +160,24 @@ def join_bytes(s: str) -> str:
     return s.encode("utf-8", ERRORS).decode("utf-8", ERRORS)
 
 
+# ------------------------------------------------------- ordering
+def byte_order(x: str, y: str) -> tuple[str, str] | tuple[bytes, bytes]:
+    """The forms of ``x`` and ``y`` to compare with ``<``, so that awk's
+    string comparison orders their bytes, as every reference awk does.
+
+    Python compares str by code point.  For valid UTF-8 that is the same
+    order as the bytes, but an invalid byte is held as U+DC80..U+DCFF
+    (surrogateescape), so "\\200" would sort after "é" although its byte
+    0x80 comes before é's 0xC3 0xA9.  So in UTF-8 mode non-ASCII strings
+    are compared as their bytes.  In C mode each character is one byte
+    (Latin-1) already.  Equality needs none of this: the mapping between
+    strings and bytes is one-to-one.
+    """
+    if UTF8 and not (x.isascii() and y.isascii()):
+        return x.encode("utf-8", ERRORS), y.encode("utf-8", ERRORS)
+    return x, y
+
+
 # ------------------------------------------------------- case mapping
 # str.translate(table) replaces each character found in the dict ``table``
 # (code -> code) and leaves the others alone.

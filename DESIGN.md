@@ -42,7 +42,8 @@ A value is one of: `float` (number), `str` (string), or `StrNum(s, n)`
   plain string too. All three references agree, except that mawk makes
   `$0` a strnum after an `NF` assignment (gawk tests `nfldstr`, `zeroe0`).
 * Comparison: numeric if neither operand is a plain string, otherwise string
-  comparison (numbers converted with `CONVFMT`).
+  comparison (numbers converted with `CONVFMT`), byte by byte in both
+  modes (see "Locales and UTF-8").
 * Number → string: integral values with |n| < 2^64 print as integers
   (like mawk/gawk), otherwise via `CONVFMT` (or `OFMT` for `print`).
   inf/nan render as `+inf`, `-inf`, `+nan`, `-nan` (as gawk 4.2+ and mawk do).
@@ -823,10 +824,10 @@ and new code: regex 0.565 / 0.565–0.570 s, gsub 0.829–0.841 /
 
 ## Test status
 
-pytest: 1969 passed, 122 skipped (4 more skips without the reference awks). Golden summaries: own corpus 154/154
-(nine v1.0 categories with 99 cases, plus environ 5, io 18, nextfile 7,
+pytest: 1996 passed, 122 skipped (4 more skips without the reference awks). Golden summaries: own corpus 155/155
+(nine v1.0 categories with 100 cases, plus environ 5, io 18, nextfile 7,
 regex_posix 8 and utf8 17), onetrue-awk 215 pass / 9 skip, gawk 192 pass /
-112 skip, no failures and empty `KNOWN_FAILURES` lists (2026-11-02,
+112 skip, no failures and empty `KNOWN_FAILURES` lists (2026-11-03,
 `enhancements` branch). The regex differential record (570 patterns,
 13 503 input lines) and the UTF-8 one (88 patterns, 2 152 lines) have no
 mismatches. v1.0 had 744 / 99 / 215 / 190. The extra gawk cases
@@ -1133,6 +1134,7 @@ where noted. References run with `LC_ALL=C.UTF-8`.
 | default FS and U+3000 / U+00A0 | not separators | not separators | not separators: space, tab, newline only |
 | multi-character `RS = "é\|x"` | regex | first character only | regex (onetrue, mawk, and pyawk's C mode; OVERRIDES `utf8/record_separator`) |
 | `"é" < "z"` | 0 | 0 | 0: comparison by code point (no locale collation) |
+| `"\200" < "é"`, `"\303" < "é"`, `"\377" < "😀"` (invalid bytes) | 1 1 0 | 1 1 0 | **1 1 0: strings compare by their bytes** (mawk and hawk too). For valid UTF-8 this is the same order as by code point; pyawk 1.1 compared Python strings, where an invalid byte (held as U+DC80..U+DCFF) sorted after `é` and before U+E000, giving 0 0 1. `charset.byte_order` gives the forms to compare, used by `<` `<=` `>` `>=`; `==` and `!=` need nothing, since strings and bytes map one to one. Nothing else in pyawk orders strings: `for (k in a)` visits keys in insertion order (the order is unspecified, and every reference differs), and regex ranges such as `[a-\377]` are left as they were (gawk rejects that range, onetrue-awk and mawk disagree) |
 | `é = 1`, `-v é=1` (non-ASCII names) | syntax error / invalid -v | syntax error / fatal | errors (all three agree; mawk too) |
 | `printf "%٣d"`, `/a{٣}/` (Arabic-Indic digit) | not a width / not an interval | not a width / not an interval | ASCII digits only (Python's `isdigit()` would accept `٣`) |
 

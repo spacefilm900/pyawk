@@ -705,6 +705,16 @@ class Compiler:
             test = _eq
         else:
             test = _ne
+        # Strings are ordered by their bytes (charset.byte_order), which in
+        # UTF-8 mode differs from Python's code-point order for invalid
+        # bytes.  Equality is the same either way, so == and != skip it.
+        if op in ("==", "!="):
+            str_test = test
+        else:
+
+            def str_test(x: str, y: str) -> bool:
+                return test(*charset.byte_order(x, y))
+
         if type(node.right) is ast.Num:
             # Comparing with a number constant: the right side is known to
             # be numeric, so only the left side's type matters.  Its string
@@ -723,7 +733,7 @@ class Compiler:
                 if ta is StrNum:
                     return test(a.n, c)  # type: ignore[union-attr]
                 s = c_str if c_str is not None else num_to_str(c, to_str(vars_["CONVFMT"]))
-                return test(a, s)
+                return str_test(a, s)
 
             return compare_const
         right = self.expr(node.right)
@@ -734,7 +744,7 @@ class Compiler:
             if type(a) is float and type(b) is float:  # the common case first
                 return test(a, b)
             if type(a) is str or type(b) is str:
-                return test(sval(a), sval(b))
+                return str_test(sval(a), sval(b))
             return test(
                 a if type(a) is float else a.n,  # type: ignore[union-attr]
                 b if type(b) is float else b.n,  # type: ignore[union-attr]
