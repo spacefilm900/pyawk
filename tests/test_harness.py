@@ -178,6 +178,16 @@ def test_regen_without_the_references_is_a_clear_error(
 # uses ASCII and fails on the golden files' non-ASCII text.
 ASCII_LOCALE = {"LC_ALL": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
 
+
+def _ascii_env() -> dict[str, str]:
+    """This process's environment with the locale made ASCII.  The locale
+    variables are replaced, and PYTHONIOENCODING is dropped: it would set
+    the child's stdout and stderr encoding whatever the locale says."""
+    keep = {k: v for k, v in os.environ.items()
+            if not k.startswith(("LC_", "LANG")) and k != "PYTHONIOENCODING"}
+    return keep | ASCII_LOCALE
+
+
 READ_EVERY_CASE = """
 import sys
 sys.path.insert(0, "awk_tests")
@@ -196,7 +206,7 @@ print(len(cases))
 def test_harness_reads_its_files_under_an_ascii_locale() -> None:
     """golden/OVERRIDES, the .args, .environ and other case files are UTF-8
     whatever the locale: the harness names the encoding when it reads them."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("LC_", "LANG"))} | ASCII_LOCALE
+    env = _ascii_env()
     res = subprocess.run([sys.executable, "-c", READ_EVERY_CASE], capture_output=True, text=True,
                          encoding="utf-8", errors="replace", cwd=REPO, env=env)
     assert res.returncode == 0, res.stderr
@@ -254,12 +264,18 @@ print("na\\u00efve", file=sys.stderr)
 """
 
 
-def test_tolerant_output_under_an_ascii_locale() -> None:
+@pytest.mark.parametrize("inherited", [None, "utf-8"])
+def test_tolerant_output_under_an_ascii_locale(inherited: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
     """The scripts print case names, reasons and diffs, which may not be
     ASCII (golden/OVERRIDES is not).  Under an ASCII locale such a print
     raised UnicodeEncodeError; after harness.tolerant_output() a character
-    the terminal cannot show is written as a backslash escape instead."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("LC_", "LANG"))} | ASCII_LOCALE
+    the terminal cannot show is written as a backslash escape instead.
+    A PYTHONIOENCODING set where the tests run must not leak into it."""
+    if inherited is None:
+        monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+    else:
+        monkeypatch.setenv("PYTHONIOENCODING", inherited)
+    env = _ascii_env()
     res = subprocess.run([sys.executable, "-c", TOLERANT_OUTPUT], capture_output=True, text=True,
                          encoding="utf-8", cwd=REPO, env=env)
     assert (res.returncode, res.stdout, res.stderr) == (0, "caf\\xe9\n", "na\\xefve\n")
