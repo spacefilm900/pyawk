@@ -175,7 +175,9 @@ def test_regen_without_the_references_is_a_clear_error(
 # An ASCII locale: LC_ALL=C, with Python's own UTF-8 fallbacks turned off
 # (PYTHONUTF8=0: no UTF-8 mode; PYTHONCOERCECLOCALE=0: C is not changed
 # to C.UTF-8).  Then a file read or written without an explicit encoding
-# uses ASCII and fails on the golden files' non-ASCII text.
+# uses ASCII and fails on the golden files' non-ASCII text.  This does not
+# establish an ASCII preferred encoding on Windows, so the two tests that
+# use it are skipped there (the suite is exercised on POSIX).
 ASCII_LOCALE = {"LC_ALL": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
 
 
@@ -204,6 +206,7 @@ print(len(cases))
 """
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="requires an ASCII locale (LC_ALL=C)")
 def test_harness_reads_its_files_under_an_ascii_locale() -> None:
     """golden/OVERRIDES, the .args, .environ and other case files are UTF-8
     whatever the locale: the harness names the encoding when it reads them."""
@@ -265,6 +268,7 @@ print("na\\u00efve", file=sys.stderr)
 """
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="requires an ASCII locale (LC_ALL=C)")
 @pytest.mark.parametrize("inherited", [None, "utf-8"])
 def test_tolerant_output_under_an_ascii_locale(inherited: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
     """The scripts print case names, reasons and diffs, which may not be

@@ -44,6 +44,10 @@ choices are listed in DESIGN.md ("User-defined functions").
 
 ## Tests
 
+The regression suite is exercised on POSIX (Linux/macOS). A couple of
+ASCII-locale harness probes are skipped on Windows, where `LC_ALL=C` does
+not yield an ASCII preferred encoding.
+
 ```sh
 .venv/bin/python -m pytest -q          # unit tests + every golden case
 scripts/run_golden.py [--diff] [-v]    # pass/fail summary per category
