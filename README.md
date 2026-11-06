@@ -96,9 +96,15 @@ Golden cases live in `awk_tests/golden/<category>/NAME.{awk,in,out[,args]}`
 and run as `awk [args] -f NAME.awk NAME.in` in a throwaway copy of the
 category directory (a sandbox, so programs may write and read back files).
 Optional per-case files: `NAME.environ` (`NAME=value` lines added to the
-environment), `NAME.operands` (operands used instead of `NAME.in`) and
-`NAME.stdin` (standard input). `scripts/make_corpus.py` is the source of
-all of them. Cases listed in `awk_tests/golden/OVERRIDES` have
+environment), `NAME.operands` (operands used instead of `NAME.in`),
+`NAME.stdin` (standard input), `NAME.status` (expected exit status; default
+0 when absent) and `NAME.err` (expected stderr, compared exactly; without
+it, stderr is not checked, because reference awks word errors differently).
+A missing or wrong exit status fails the case the same way a wrong stdout
+does: parse and runtime errors are ordinary expected process failures
+(typically exit 2 with a `.status` / `.err` pair), not harness crashes.
+`scripts/make_corpus.py` is the source of most of them; the `errors`
+category holds a few hand-written expected-failure fixtures. Cases listed in `awk_tests/golden/OVERRIDES` have
 hand-corrected `.out` files (mawk is the outlier there); `regen_golden.py`
 leaves them alone. `awk_tests/golden/DECISIONS` lists cases that follow a
 project decision instead of the majority, and
@@ -132,8 +138,13 @@ importer uses a `.ok` only when at least two of onetrue-awk, mawk and
 `gawk --posix` produce the same stdout; otherwise it uses the references'
 majority, or skips the case. Skips (gawk extensions, locales, error-message
 tests, custom Makefile rules, ...) carry a reason in `MANIFEST.tsv`.
-Cases fed on standard input have a `NAME.stdin` file. `KNOWN_FAILURES`
-works as for the onetrue suite.
+The 48 `error-message test` skips stay skipped for now: their `.ok` is
+gawk's wording, not a portable expectation. Cases that already run and
+stop with a syntax error (for example `delfunc`) now carry a `.status`
+of 2 so the exit code is checked; reclaiming a skip means writing our
+own `.status` / `.err` (or a substring match) for the POSIX behaviour,
+not importing gawk's text. Cases fed on standard input have a
+`NAME.stdin` file. `KNOWN_FAILURES` works as for the onetrue suite.
 
 ```sh
 scripts/import_gawk.py      # re-import (needs the three awks and gawk-5.4.1/test)
@@ -142,12 +153,12 @@ scripts/run_golden.py gawk --diff
 
 ### Current test status
 
-As of 2026-11-02 (`.venv/bin/python -m pytest -q` with the three reference awks found, `scripts/run_golden.py`):
+As of 2026-11-06 (`.venv/bin/python -m pytest -q` with the three reference awks found, `scripts/run_golden.py`):
 
 | suite | pass | fail | skip |
 |---|---|---|---|
-| pytest (all) | 1969 | 0 | 122 |
-| own golden corpus (incl. regex_posix 8, utf8 17) | 154 | 0 | 0 |
+| pytest (all) | 2003 | 0 | 126 |
+| own golden corpus (incl. regex_posix 8, utf8 17, errors 2) | 158 | 0 | 0 |
 | imported onetrue-awk | 215 | 0 | 9 |
 | imported gawk | 192 | 0 | 112 |
 | regex differential (570 patterns, 13 503 lines) | 13 503 | 0 | 108 split/untested |
