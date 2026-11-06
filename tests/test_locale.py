@@ -179,6 +179,16 @@ CASES = [
     ("{ print ($1 < $2), ($2 < $1), ($1 < $3), ($3 < $1) }", b"\x80 \xc3\xa9 \xff\n", b"1 0 1 0\n", b"1 0 1 0\n"),
     # A string against a number constant converts the number with CONVFMT.
     ('BEGIN { CONVFMT = "\\200%.1f" } { print ($1 < 0.5), ($2 < 0.5) }', b"\xc3\xa9 \x7f\n", b"0 1\n", b"0 1\n"),
+    # A subscript list joins with SUBSEP the way concatenation does, so the
+    # bytes of é make the character é (gawk, onetrue-awk, hawk).
+    (
+        'BEGIN { SUBSEP = ""; a["\\303", "\\251"]; for (k in a) print (k == "\\303\\251"), length(k),'
+        ' ("\\303\\251" in a), (("\\303", "\\251") in a);'
+        ' SUBSEP = "\\251"; b["\\303", "x"]; for (k in b) print length(k), (k == "\\303\\251x") }',
+        b"",
+        b"1 1 1 1\n2 1\n",
+        b"1 2 1 1\n3 1\n",
+    ),
     (
         '{ print toupper($0), tolower("\xc3\x80B") }',
         b"\xc3\xa9a\xc3\x9f\n",

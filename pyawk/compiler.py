@@ -1581,10 +1581,14 @@ class Compiler:
                 return _const(str(k))  # whole numbers print the same under any CONVFMT
             return self.string(node)
         parts, vars_ = [self.string(e) for e in subs], self.vars
+        join_bytes = charset.join_bytes
 
         def multi_key() -> str:
+            # As in concatenation, escaped bytes that meet at a join and
+            # complete a character become that character (UTF-8 mode), so
+            # a["\303", "\251"] with SUBSEP "" is a["é"].
             sep = sval(vars_["SUBSEP"])
-            return sep.join([p() for p in parts])
+            return join_bytes(sep.join([p() for p in parts]))
 
         return multi_key
 

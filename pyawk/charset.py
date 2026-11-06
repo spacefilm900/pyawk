@@ -155,7 +155,7 @@ def join_bytes(s: str) -> str:
     the single character é.  Encoding back to bytes and decoding again does
     exactly that, leaving any invalid bytes escaped.  (C mode: no change.)
     """
-    if not UTF8:
+    if not UTF8 or s.isascii():  # ASCII text holds no escaped bytes
         return s
     return s.encode("utf-8", ERRORS).decode("utf-8", ERRORS)
 
