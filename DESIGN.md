@@ -824,7 +824,7 @@ and new code: regex 0.565 / 0.565–0.570 s, gsub 0.829–0.841 /
 
 ## Test status
 
-pytest: 2012 passed, 126 skipped. Golden summaries: own corpus 158/158
+pytest: 2016 passed, 126 skipped. Golden summaries: own corpus 158/158
 (nine v1.0 categories with 100 cases, plus environ 5, io 18, nextfile 7,
 regex_posix 8 and utf8 17), onetrue-awk 215 pass / 9 skip, gawk 192 pass /
 112 skip, no failures and empty `KNOWN_FAILURES` lists (2026-11-03,

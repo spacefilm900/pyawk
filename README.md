@@ -48,7 +48,17 @@ The regression suite is exercised on POSIX (Linux/macOS). A couple of
 ASCII-locale harness probes are skipped on Windows, where `LC_ALL=C` does
 not yield an ASCII preferred encoding.
 
+GitHub Actions (`.github/workflows/ci.yml`) runs the same recipes as
+`scripts/regress.sh` — no reference awks or secrets required (golden
+`.out` files and the regex differential JSON are committed). `quick` is
+ruff + pytest on Python 3.11–3.13; `thorough` adds `run_golden.py` and
+`regex_fuzz.py --check` (C and UTF-8). The script refuses to report
+success if fewer than 1900 tests passed, so a misconfigured collect
+cannot look green.
+
 ```sh
+scripts/regress.sh quick               # same as CI quick job
+scripts/regress.sh thorough            # same as CI thorough job
 .venv/bin/python -m pytest -q          # unit tests + every golden case
 scripts/run_golden.py [--diff] [-v]    # pass/fail summary per category
 scripts/regen_golden.py [--check]      # regenerate (or verify) .out with mawk (gawk for utf8)
@@ -167,7 +177,7 @@ As of 2026-11-06 (`.venv/bin/python -m pytest -q` with the three reference awks 
 
 | suite | pass | fail | skip |
 |---|---|---|---|
-| pytest (all) | 2012 | 0 | 126 |
+| pytest (all) | 2016 | 0 | 126 |
 | own golden corpus (incl. regex_posix 8, utf8 17, errors 2) | 158 | 0 | 0 |
 | imported onetrue-awk | 215 | 0 | 9 |
 | imported gawk | 192 | 0 | 112 |
