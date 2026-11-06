@@ -1,0 +1,64 @@
+# CI for pyawk. Local recipe: scripts/regress.sh [quick|thorough]
+# Canonical copy of the GitHub Actions workflow. To enable Actions, copy
+# this file to .github/workflows/ci.yml (pushing under .github/workflows/
+# requires a GitHub token with the `workflow` scope).
+name: CI
+
+"on":
+  push:
+    branches: [enhancements]
+  pull_request:
+    branches: [enhancements, master]
+  # Same thorough command as locally; no secrets required.
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  quick:
+    name: quick (Python ${{ matrix.python-version }})
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test extras
+        run: pip install -e '.[test]'
+      - name: regress quick
+        # ruff + pytest; golden .out and regex differential JSON are committed,
+        # so no PYAWK_REF_* or reference awks are required.
+        run: bash scripts/regress.sh quick
+        timeout-minutes: 12
+
+  thorough:
+    name: thorough
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [quick]
+    # On schedule, quick is skipped; run thorough alone. On push/PR, wait for quick.
+    if: always() && (github.event_name == 'schedule' || needs.quick.result == 'success')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install test extras
+        run: pip install -e '.[test]'
+      - name: regress thorough
+        # Includes quick steps, then run_golden.py + regex_fuzz --check (C and
+        # UTF-8). Still no reference awks: uses committed .out / differential JSON.
+        run: bash scripts/regress.sh thorough
+        timeout-minutes: 18
