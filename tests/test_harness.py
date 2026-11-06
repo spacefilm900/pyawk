@@ -199,6 +199,7 @@ harness.read_decisions()
 cases = harness.discover()
 for case in cases:
     case.extra_args(), case.operands(), case.extra_env(), case.stdin_data(), case.expected()
+    case.expected_exit(), case.expected_stderr()
 print(len(cases))
 """
 
@@ -312,3 +313,74 @@ def test_environ_file_malformed_line_is_an_error(tmp_path: Path, text: str, bad:
     with pytest.raises(ValueError) as info:
         case.extra_env()
     assert str(info.value) == f"{tmp_path / 't.environ'}:{bad}: not NAME=value: {line!r}"
+
+
+# ---------------------------------------------------------------------------
+# Expected exit status (.status) and stderr (.err) sidecars for golden cases.
+# ---------------------------------------------------------------------------
+
+def _write_case(tmp_path: Path, *, awk: str = "BEGIN { print 1 }", out: str = "1\n",
+                status: str | None = None, err: str | None = None) -> harness.Case:
+    """A minimal golden-shaped case under tmp_path for harness checks."""
+    (tmp_path / "t.awk").write_text(awk, encoding="utf-8")
+    (tmp_path / "t.in").write_text("", encoding="utf-8")
+    (tmp_path / "t.out").write_text(out, encoding="utf-8")
+    if status is not None:
+        (tmp_path / "t.status").write_text(status, encoding="utf-8")
+    if err is not None:
+        (tmp_path / "t.err").write_text(err, encoding="utf-8")
+    return harness.Case("basic", "t", tmp_path)
+
+
+def test_expected_exit_defaults_to_zero_without_status_file(tmp_path: Path) -> None:
+    """No .status means the case is expected to exit 0 (a normal successful run)."""
+    assert _write_case(tmp_path).expected_exit() == 0
+
+
+def test_expected_exit_reads_status_file(tmp_path: Path) -> None:
+    """``.status`` holds a single integer (whitespace and a ``#`` comment are fine)."""
+    assert _write_case(tmp_path, status="7\n").expected_exit() == 7
+    assert _write_case(tmp_path, status="  2  # syntax error\n").expected_exit() == 2
+
+
+def test_expected_stderr_is_optional(tmp_path: Path) -> None:
+    """No ``.err`` means stderr is not asserted; with ``.err``, the contents are exact."""
+    assert _write_case(tmp_path).expected_stderr() is None
+    assert _write_case(tmp_path, err="pyawk: boom\n").expected_stderr() == "pyawk: boom\n"
+
+
+def test_result_problems_detects_wrong_stdout_exit_and_stderr(tmp_path: Path) -> None:
+    """The runner must notice each of: wrong stdout, wrong exit, wrong/missing stderr."""
+    # A program that prints "ok", exits 2, and writes one stderr line.
+    case = _write_case(
+        tmp_path,
+        awk='BEGIN { print "ok" > "/dev/stderr"; print "ok"; exit 2 }',
+        out="ok\n",
+        status="2\n",
+        err="ok\n",
+    )
+    good = SimpleNamespace(stdout="ok\n", stderr="ok\n", returncode=2)
+    assert case.result_problems(good) == []
+
+    assert "stdout" in " ".join(case.result_problems(
+        SimpleNamespace(stdout="no\n", stderr="ok\n", returncode=2)))
+    assert "exit" in " ".join(case.result_problems(
+        SimpleNamespace(stdout="ok\n", stderr="ok\n", returncode=0)))
+    assert "stderr" in " ".join(case.result_problems(
+        SimpleNamespace(stdout="ok\n", stderr="", returncode=2)))
+
+
+def test_result_problems_ignores_stderr_when_no_err_file(tmp_path: Path) -> None:
+    """Without ``.err``, a warning or other stderr text does not fail the case."""
+    case = _write_case(tmp_path, out="1\n")  # no .err, expect exit 0
+    assert case.result_problems(
+        SimpleNamespace(stdout="1\n", stderr="pyawk: warning: noise\n", returncode=0)
+    ) == []
+
+
+def test_malformed_status_file_is_an_error(tmp_path: Path) -> None:
+    """A ``.status`` that is not an integer is a mistake in the case, not exit 0."""
+    case = _write_case(tmp_path, status="not-a-number\n")
+    with pytest.raises(ValueError) as info:
+        case.expected_exit()
+    assert "t.status" in str(info.value)

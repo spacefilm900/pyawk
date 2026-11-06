@@ -61,7 +61,7 @@ defref	skip	error-message test: .ok is only gawk error text	local gawk reproduce
 delargv	skip	no majority among references	local gawk reproduces .ok
 delarpm2	sorted	for-in order is unspecified	expected: gawk .ok (agree: onetrue,mawk); local gawk differs from .ok; .ok has no diagnostics
 delarprm	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok
-delfunc	run	program stops with an error; only stdout compared	expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok; error from: onetrue,mawk,gawk
+delfunc	run	program stops with a syntax error; .status expects exit 2	expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok; error from: onetrue,mawk,gawk
 dfacheck2	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok
 dfamb1	skip	locale/i18n: needs a UTF-8 or national locale	
 dfastress	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok
@@ -85,11 +85,11 @@ fldchg	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces
 fldchgnf	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok
 fldterm	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok
 fmtmix	skip	no majority among references	local gawk reproduces .ok
-fnamedat	run	program stops with an error; only stdout compared	expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok; error from: onetrue,mawk,gawk
-fnarray	run	program stops with an error; only stdout compared	expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok; error from: onetrue,mawk,gawk
-fnarray2	run	program stops with an error; only stdout compared	expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok; error from: onetrue,mawk,gawk
+fnamedat	run	program stops with a syntax error; .status expects exit 2	expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok; error from: onetrue,mawk,gawk
+fnarray	run	program stops with a syntax error; .status expects exit 2	expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok; error from: onetrue,mawk,gawk
+fnarray2	run	program stops with a syntax error; .status expects exit 2	expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok; error from: onetrue,mawk,gawk
 fnaryscl	skip	error-message test: .ok is only gawk error text	local gawk reproduces .ok; error from: onetrue,mawk,gawk
-fnasgnm	run	program stops with an error; only stdout compared	expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok; error from: onetrue,mawk,gawk
+fnasgnm	run	program stops with a syntax error; .status expects exit 2	expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok; error from: onetrue,mawk,gawk
 fnmisc	skip	error-message test: .ok is only gawk error text	local gawk reproduces .ok; error from: onetrue,mawk,gawk
 fordel	sorted	for-in order is unspecified	expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok
 forref	sorted	for-in order is unspecified	expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok
@@ -114,7 +114,7 @@ getnr2tb	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduc
 getnr2tm	skip	gawk extension: IGNORECASE	local gawk reproduces .ok
 greek-equiv	skip	locale/i18n: needs a UTF-8 or national locale	
 greek-utf	skip	locale/i18n: needs a UTF-8 or national locale	
-gsubasgn	run	program stops with an error; only stdout compared	expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok; error from: onetrue,mawk,gawk
+gsubasgn	run	program stops with a syntax error; .status expects exit 2	expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok; error from: onetrue,mawk,gawk
 gsubnulli18n	skip	locale/i18n: needs a UTF-8 or national locale	
 gsubtest	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok
 gsubtst2	run		expected: gawk .ok (agree: onetrue,mawk,gawk); local gawk reproduces .ok

@@ -3,7 +3,11 @@
 Layout: ``awk_tests/golden/<category>/<name>.awk`` with ``<name>.in`` (stdin
 operand file, may be empty) and ``<name>.out`` (expected stdout).  An
 optional ``<name>.args`` holds extra command-line options (shell syntax),
-e.g. ``-F:``; they are placed before ``-f <name>.awk``.
+e.g. ``-F:``; they are placed before ``-f <name>.awk``.  Optional
+``<name>.status`` holds the expected exit status (an integer; default 0
+when the file is absent).  Optional ``<name>.err`` holds the expected
+stderr, compared exactly; without it, stderr is not checked (reference
+awks word error messages differently).
 
 Each case runs as ``<awk> [args] -f <name>.awk <name>.in`` with the
 category directory as the working directory.  The same function runs
@@ -63,7 +67,7 @@ GOLDEN = ROOT / "golden"
 REPO = ROOT.parent
 CATEGORIES = (
     "basic", "fields", "patterns", "control", "arrays", "builtins", "functions", "ranges", "one_liners",
-    "environ", "io", "nextfile", "regex_posix", "utf8",
+    "environ", "io", "nextfile", "regex_posix", "utf8", "errors",
 )
 # The locale (LC_ALL) each category runs in; every other category runs in
 # the C locale, where a character is a byte.  The ``utf8`` cases test
@@ -108,7 +112,7 @@ def category_dir(cat: str) -> Path:
 # instances read-only.
 @dataclass(frozen=True)
 class Case:
-    """One golden test: the files ``<directory>/<name>.{awk,in,out,args}``."""
+    """One golden test: the files ``<directory>/<name>.{awk,in,out,args,status,err}``."""
 
     category: str
     name: str
@@ -177,6 +181,40 @@ class Case:
     def expected(self) -> str:
         return self.path(".out").read_text(encoding="utf-8", errors="surrogateescape")
 
+    def expected_exit(self) -> int:
+        """Expected process exit status: from ``.status``, or 0 if absent.
+
+        The file holds one integer (leading and trailing whitespace is fine;
+        a ``#`` comment may follow the number).  An empty or non-integer
+        file is a mistake in the case and raises ValueError.
+        """
+        p = self.path(".status")
+        if not p.exists():
+            return 0
+        # First non-empty line after stripping a ``#`` comment, then int().
+        raw = p.read_text(encoding="utf-8")
+        line = raw.splitlines()[0] if raw.strip() else ""
+        number = line.partition("#")[0].strip()
+        if not number:
+            raise ValueError(f"{p}: empty status file")
+        try:
+            return int(number)
+        except ValueError as exc:
+            raise ValueError(f"{p}: not an integer: {line!r}") from exc
+
+    def expected_stderr(self) -> str | None:
+        """Expected stderr from ``.err``, or None when stderr is not checked.
+
+        When the file is present its contents are compared exactly to the
+        process stderr (same encoding rules as ``.out``).  Without ``.err``,
+        stderr is ignored: reference awks word error messages differently,
+        and some cases print to stderr on purpose without locking the text.
+        """
+        p = self.path(".err")
+        if not p.exists():
+            return None
+        return p.read_text(encoding="utf-8", errors="surrogateescape")
+
     @property
     def skipped(self) -> bool:
         return self.status == "skip"
@@ -189,6 +227,24 @@ class Case:
             # each line's "\n" so a missing final newline still counts.
             return sorted(stdout.splitlines(keepends=True)) == sorted(expected.splitlines(keepends=True))
         return stdout == expected
+
+    def result_problems(self, proc: subprocess.CompletedProcess[str] | object) -> list[str]:
+        """Ways this run disagrees with the case: stdout, exit status, stderr.
+
+        ``proc`` needs ``stdout``, ``stderr`` and ``returncode`` attributes
+        (a ``CompletedProcess``, or a stand-in in tests).  An empty list
+        means the run matched.  Stderr is only checked when ``.err`` exists.
+        """
+        problems: list[str] = []
+        if not self.matches(proc.stdout):
+            problems.append("stdout mismatch")
+        want_exit = self.expected_exit()
+        if proc.returncode != want_exit:
+            problems.append(f"exit status {proc.returncode}, expected {want_exit}")
+        want_err = self.expected_stderr()
+        if want_err is not None and proc.stderr != want_err:
+            problems.append("stderr mismatch")
+        return problems
 
 
 def read_manifest(directory: Path) -> dict[str, tuple[str, str]]:

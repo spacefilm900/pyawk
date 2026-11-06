@@ -31,16 +31,37 @@ def _param(case: harness.Case):
 @pytest.mark.parametrize("case", [_param(c) for c in CASES])
 def test_golden(case: harness.Case) -> None:
     proc = harness.run_case(case, harness.pyawk_command())
-    if not case.matches(proc.stdout):
-        diff = "".join(
-            difflib.unified_diff(
-                case.expected().splitlines(keepends=True),
-                proc.stdout.splitlines(keepends=True),
-                "expected",
-                "pyawk",
+    problems = case.result_problems(proc)
+    if not problems:
+        return
+    parts = [f"{case.id}: {', '.join(problems)}"]
+    if "stdout mismatch" in problems:
+        parts.append(
+            "".join(
+                difflib.unified_diff(
+                    case.expected().splitlines(keepends=True),
+                    proc.stdout.splitlines(keepends=True),
+                    "expected",
+                    "pyawk",
+                )
             )
         )
-        pytest.fail(f"output mismatch for {case.id}\n{diff}\nstderr: {proc.stderr}")
+    if any(p.startswith("exit status") for p in problems):
+        parts.append(f"exit: got {proc.returncode}, expected {case.expected_exit()}")
+    if "stderr mismatch" in problems:
+        parts.append(
+            "".join(
+                difflib.unified_diff(
+                    (case.expected_stderr() or "").splitlines(keepends=True),
+                    proc.stderr.splitlines(keepends=True),
+                    "expected-stderr",
+                    "pyawk-stderr",
+                )
+            )
+        )
+    elif proc.stderr:
+        parts.append(f"stderr: {proc.stderr}")
+    pytest.fail("\n".join(parts))
 
 
 # Operands that upstream passes on purpose but the program never opens as

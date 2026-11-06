@@ -5,7 +5,9 @@ usage: scripts/run_golden.py [-v] [--diff] [--write-known-failures] [CATEGORY or
 
 Each case's stdout must match its ``.out`` file byte for byte (those files
 were produced by reference awks; see regen_golden.py, import_onetrue.py
-and import_gawk.py).
+and import_gawk.py).  The exit status must match ``.status`` when that
+file is present, and otherwise 0.  When ``.err`` is present, stderr must
+match it exactly; without ``.err``, stderr is not checked.
 Cases whose MANIFEST.tsv status is "sorted" are compared line-order-blind,
 and "skip" cases are not run at all but counted in the "skip" column.
 
@@ -55,21 +57,33 @@ def main() -> int:
                 print(f"SKIP {case.id}  ({case.reason})")
             continue
         proc = harness.run_case(case, harness.pyawk_command())
-        ok = case.matches(proc.stdout)
+        problems = case.result_problems(proc)
+        ok = not problems
         if ok:
             passed[case.category] += 1
         else:
             failed[case.category].append(case.name)
         if opts.verbose or not ok:
             known = " (known)" if case.known_failure and not ok else ""
-            print(f"{'PASS' if ok else 'FAIL'} {case.id}{known}")
+            detail = f"  ({', '.join(problems)})" if problems else ""
+            print(f"{'PASS' if ok else 'FAIL'} {case.id}{known}{detail}")
         if not ok and opts.diff:
-            diff = difflib.unified_diff(
-                case.expected().splitlines(keepends=True), proc.stdout.splitlines(keepends=True),
-                "expected", "pyawk",
-            )
-            sys.stdout.writelines("    " + line for line in diff)
-            if proc.stderr:
+            if "stdout mismatch" in problems:
+                diff = difflib.unified_diff(
+                    case.expected().splitlines(keepends=True), proc.stdout.splitlines(keepends=True),
+                    "expected", "pyawk",
+                )
+                sys.stdout.writelines("    " + line for line in diff)
+            if any(p.startswith("exit status") for p in problems):
+                print(f"    exit: got {proc.returncode}, expected {case.expected_exit()}")
+            if "stderr mismatch" in problems:
+                diff = difflib.unified_diff(
+                    (case.expected_stderr() or "").splitlines(keepends=True),
+                    proc.stderr.splitlines(keepends=True),
+                    "expected-stderr", "pyawk-stderr",
+                )
+                sys.stdout.writelines("    " + line for line in diff)
+            elif proc.stderr:
                 print("    stderr:", proc.stderr.strip())
     print()
     # f-strings: ``{x:<12}`` inserts x left-aligned in 12 columns, ``>5`` right-aligned.
