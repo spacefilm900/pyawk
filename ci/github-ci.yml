@@ -49,7 +49,7 @@ jobs:
     timeout-minutes: 20
     needs: [quick]
     # On schedule, quick is skipped; run thorough alone. On push/PR, wait for quick.
-    if: always() && (github.event_name == 'schedule' || needs.quick.result == 'success')
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || needs.quick.result == 'success') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
