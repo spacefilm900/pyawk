@@ -824,7 +824,7 @@ and new code: regex 0.565 / 0.565–0.570 s, gsub 0.829–0.841 /
 
 ## Test status
 
-pytest: 2003 passed, 126 skipped. Golden summaries: own corpus 158/158
+pytest: 2012 passed, 126 skipped. Golden summaries: own corpus 158/158
 (nine v1.0 categories with 100 cases, plus environ 5, io 18, nextfile 7,
 regex_posix 8 and utf8 17), onetrue-awk 215 pass / 9 skip, gawk 192 pass /
 112 skip, no failures and empty `KNOWN_FAILURES` lists (2026-11-03,
@@ -907,11 +907,16 @@ the majority wins; the splits are recorded under "I/O decisions".
   a backslash escape (`\xe9`) rather than fail.
 * Golden runs check stdout against `.out`, the exit status against
   `.status` (default 0 when absent), and stderr against `.err` when that
-  file is present. Without `.err`, stderr is not asserted: reference awks
-  word error messages differently. Parse and runtime errors are modelled
-  as ordinary expected process failures (exit 2 with a `.status` / `.err`
-  pair in the `errors` category), not harness crashes. SIGPIPE and other
-  signal deaths remain covered by unit tests in `tests/test_io.py`.
+  file is present. A `.err` file may start with `mode: portable|exact|
+  substr|regex` (default `exact`). `portable` asserts only that stderr is
+  non-empty — POSIX requires a diagnostic, not a specific wording — so
+  copying gawk or pyawk text is not treated as conformance.
+  `exact`/`substr`/`regex` are intentional implementation-specific checks.
+  Without `.err`, stderr is not asserted. Parse and runtime errors are
+  modelled as ordinary expected process failures (exit 2 with a `.status`
+  / portable `.err` in the `errors` category), not harness crashes.
+  SIGPIPE and other signal deaths remain covered by unit tests in
+  `tests/test_io.py`.
 
 ### ENVIRON
 

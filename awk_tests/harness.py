@@ -5,9 +5,14 @@ operand file, may be empty) and ``<name>.out`` (expected stdout).  An
 optional ``<name>.args`` holds extra command-line options (shell syntax),
 e.g. ``-F:``; they are placed before ``-f <name>.awk``.  Optional
 ``<name>.status`` holds the expected exit status (an integer; default 0
-when the file is absent).  Optional ``<name>.err`` holds the expected
-stderr, compared exactly; without it, stderr is not checked (reference
-awks word error messages differently).
+when the file is absent).  Optional ``<name>.err`` describes expected
+stderr.  Without it, stderr is not checked.  With it, the first line may
+be ``mode: portable``, ``mode: exact``, ``mode: substr`` or ``mode: regex``;
+the rest of the file is the body.  ``portable`` means POSIX requires a
+diagnostic (stderr must be non-empty) without locking the wording --
+copying gawk text is not conformance.  ``exact`` / ``substr`` / ``regex``
+are intentional implementation-specific checks.  A ``.err`` with no mode
+line defaults to ``exact`` over the whole file.
 
 Each case runs as ``<awk> [args] -f <name>.awk <name>.in`` with the
 category directory as the working directory.  The same function runs
@@ -54,12 +59,14 @@ and ``nextfile`` golden categories):
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
+from typing import NamedTuple
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -105,6 +112,17 @@ def category_dir(cat: str) -> Path:
     """Where a category's files live (the imported suites are not under golden/)."""
     # ``d.get(key, default)``: the imported suite's directory, else golden/<cat>.
     return IMPORTED.get(cat, GOLDEN / cat)
+
+
+# How a ``.err`` file is interpreted (see Case.expected_stderr).
+STDERR_MODES = frozenset({"portable", "exact", "substr", "regex"})
+
+
+class StderrExpectation(NamedTuple):
+    """Expected stderr check: a mode and, for non-portable modes, a body."""
+
+    mode: str  # one of STDERR_MODES
+    body: str  # unused for portable; text or pattern otherwise
 
 
 # ``@dataclass`` generates the constructor from the annotated fields below,
@@ -202,18 +220,32 @@ class Case:
         except ValueError as exc:
             raise ValueError(f"{p}: not an integer: {line!r}") from exc
 
-    def expected_stderr(self) -> str | None:
-        """Expected stderr from ``.err``, or None when stderr is not checked.
+    def expected_stderr(self) -> StderrExpectation | None:
+        """How to check stderr from ``.err``, or None when stderr is not checked.
 
-        When the file is present its contents are compared exactly to the
-        process stderr (same encoding rules as ``.out``).  Without ``.err``,
-        stderr is ignored: reference awks word error messages differently,
-        and some cases print to stderr on purpose without locking the text.
+        The file starts with an optional ``mode: NAME`` line (``portable``,
+        ``exact``, ``substr`` or ``regex``); the rest is the body.  Without a
+        mode line the whole file is an ``exact`` match (implementation-
+        specific).  ``portable`` means stderr must be non-empty: POSIX says
+        a diagnostic is required, not what it says, so this does not treat
+        gawk or pyawk wording as conformance.  ``exact``, ``substr`` and
+        ``regex`` lock an intentional implementation-specific expectation.
         """
         p = self.path(".err")
         if not p.exists():
             return None
-        return p.read_text(encoding="utf-8", errors="surrogateescape")
+        raw = p.read_text(encoding="utf-8", errors="surrogateescape")
+        # Split off a leading ``mode: NAME`` line when present.
+        first, sep, rest = raw.partition("\n")
+        mode_line = first.partition("#")[0].strip()
+        if mode_line.lower().startswith("mode:"):
+            mode = mode_line.split(":", 1)[1].strip().lower()
+            if mode not in STDERR_MODES:
+                raise ValueError(f"{p}: unknown stderr mode {mode!r}")
+            body = rest if sep else ""
+            return StderrExpectation(mode, body)
+        # No mode line: the whole file is an exact, implementation-specific check.
+        return StderrExpectation("exact", raw)
 
     @property
     def skipped(self) -> bool:
@@ -227,6 +259,22 @@ class Case:
             # each line's "\n" so a missing final newline still counts.
             return sorted(stdout.splitlines(keepends=True)) == sorted(expected.splitlines(keepends=True))
         return stdout == expected
+
+    def stderr_matches(self, stderr: str, expect: StderrExpectation) -> bool:
+        """Does ``stderr`` satisfy a ``.err`` expectation?"""
+        if expect.mode == "portable":
+            return stderr != ""
+        if expect.mode == "exact":
+            return stderr == expect.body
+        # substr/regex: a single trailing newline on the body is ignored so
+        # writing ``mode: substr`` then ``text`` then a newline still matches.
+        body = expect.body[:-1] if expect.body.endswith("\n") else expect.body
+        if expect.mode == "substr":
+            return body in stderr
+        if expect.mode == "regex":
+            return re.search(body, stderr, flags=re.MULTILINE) is not None
+        # expected_stderr already rejects unknown modes; this is a safeguard.
+        raise ValueError(f"unknown stderr mode {expect.mode!r}")
 
     def result_problems(self, proc: subprocess.CompletedProcess[str] | object) -> list[str]:
         """Ways this run disagrees with the case: stdout, exit status, stderr.
@@ -242,7 +290,7 @@ class Case:
         if proc.returncode != want_exit:
             problems.append(f"exit status {proc.returncode}, expected {want_exit}")
         want_err = self.expected_stderr()
-        if want_err is not None and proc.stderr != want_err:
+        if want_err is not None and not self.stderr_matches(proc.stderr, want_err):
             problems.append("stderr mismatch")
         return problems
 

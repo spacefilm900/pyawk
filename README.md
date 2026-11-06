@@ -98,11 +98,16 @@ category directory (a sandbox, so programs may write and read back files).
 Optional per-case files: `NAME.environ` (`NAME=value` lines added to the
 environment), `NAME.operands` (operands used instead of `NAME.in`),
 `NAME.stdin` (standard input), `NAME.status` (expected exit status; default
-0 when absent) and `NAME.err` (expected stderr, compared exactly; without
-it, stderr is not checked, because reference awks word errors differently).
-A missing or wrong exit status fails the case the same way a wrong stdout
-does: parse and runtime errors are ordinary expected process failures
-(typically exit 2 with a `.status` / `.err` pair), not harness crashes.
+0 when absent) and `NAME.err` (optional stderr check). Without `.err`,
+stderr is not checked. With `.err`, the first line may be
+`mode: portable`, `mode: exact`, `mode: substr` or `mode: regex` (default
+`exact` if omitted). `portable` means POSIX requires a diagnostic
+(stderr must be non-empty) without locking the wording — copying gawk or
+pyawk text is not treated as conformance. `exact` / `substr` / `regex`
+are intentional implementation-specific checks. A missing or wrong exit
+status fails the case the same way a wrong stdout does: parse and runtime
+errors are ordinary expected process failures (typically exit 2 with a
+`.status` / `.err` pair), not harness crashes.
 `scripts/make_corpus.py` is the source of most of them; the `errors`
 category holds a few hand-written expected-failure fixtures. Cases listed in `awk_tests/golden/OVERRIDES` have
 hand-corrected `.out` files (mawk is the outlier there); `regen_golden.py`
@@ -141,9 +146,10 @@ tests, custom Makefile rules, ...) carry a reason in `MANIFEST.tsv`.
 The 48 `error-message test` skips stay skipped for now: their `.ok` is
 gawk's wording, not a portable expectation. Cases that already run and
 stop with a syntax error (for example `delfunc`) now carry a `.status`
-of 2 so the exit code is checked; reclaiming a skip means writing our
-own `.status` / `.err` (or a substring match) for the POSIX behaviour,
-not importing gawk's text. Cases fed on standard input have a
+of 2 so the exit code is checked; reclaiming a skip means a `.status`
+plus typically `mode: portable` on `.err` (stderr non-empty), or an
+intentional `exact`/`substr`/`regex` check — not importing gawk's text
+as if it were POSIX. Cases fed on standard input have a
 `NAME.stdin` file. `KNOWN_FAILURES` works as for the onetrue suite.
 
 ```sh
@@ -157,7 +163,7 @@ As of 2026-11-06 (`.venv/bin/python -m pytest -q` with the three reference awks 
 
 | suite | pass | fail | skip |
 |---|---|---|---|
-| pytest (all) | 2003 | 0 | 126 |
+| pytest (all) | 2012 | 0 | 126 |
 | own golden corpus (incl. regex_posix 8, utf8 17, errors 2) | 158 | 0 | 0 |
 | imported onetrue-awk | 215 | 0 | 9 |
 | imported gawk | 192 | 0 | 112 |

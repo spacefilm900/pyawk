@@ -344,20 +344,63 @@ def test_expected_exit_reads_status_file(tmp_path: Path) -> None:
 
 
 def test_expected_stderr_is_optional(tmp_path: Path) -> None:
-    """No ``.err`` means stderr is not asserted; with ``.err``, the contents are exact."""
+    """No ``.err`` means stderr is not asserted."""
     assert _write_case(tmp_path).expected_stderr() is None
-    assert _write_case(tmp_path, err="pyawk: boom\n").expected_stderr() == "pyawk: boom\n"
+
+
+def test_err_without_mode_line_is_exact(tmp_path: Path) -> None:
+    """A bare ``.err`` body (no mode line) is an implementation-specific exact match."""
+    expect = _write_case(tmp_path, err="pyawk: boom\n").expected_stderr()
+    assert expect == harness.StderrExpectation("exact", "pyawk: boom\n")
+
+
+def test_err_mode_portable_requires_nonempty_stderr_only(tmp_path: Path) -> None:
+    """``mode: portable`` means POSIX requires a diagnostic, not a specific wording.
+
+    Any non-empty stderr passes; empty stderr fails. Copying gawk (or pyawk)
+    text is not conformance.
+    """
+    case = _write_case(tmp_path, out="", status="2\n", err="mode: portable\n")
+    assert case.expected_stderr() == harness.StderrExpectation("portable", "")
+    assert case.result_problems(SimpleNamespace(stdout="", stderr="anything\n", returncode=2)) == []
+    assert case.result_problems(SimpleNamespace(stdout="", stderr="other wording\n", returncode=2)) == []
+    assert "stderr" in " ".join(case.result_problems(
+        SimpleNamespace(stdout="", stderr="", returncode=2)))
+
+
+@pytest.mark.parametrize(
+    "err, stderr, ok",
+    [
+        ("mode: exact\npyawk: boom\n", "pyawk: boom\n", True),
+        ("mode: exact\npyawk: boom\n", "pyawk: other\n", False),
+        ("mode: substr\nsyntax error\n", "pyawk: syntax error at line 1\n", True),
+        ("mode: substr\nsyntax error\n", "pyawk: parse failed\n", False),
+        ("mode: regex\npyawk: .*boom.*\n", "pyawk: fatal boom here\n", True),
+        ("mode: regex\npyawk: .*boom.*\n", "pyawk: other\n", False),
+    ],
+)
+def test_err_modes_exact_substr_regex(tmp_path: Path, err: str, stderr: str, ok: bool) -> None:
+    """Implementation-specific checks: exact, substring, or regex against stderr."""
+    case = _write_case(tmp_path, out="", status="2\n", err=err)
+    problems = case.result_problems(SimpleNamespace(stdout="", stderr=stderr, returncode=2))
+    assert (problems == []) is ok
+
+
+def test_err_unknown_mode_is_an_error(tmp_path: Path) -> None:
+    case = _write_case(tmp_path, err="mode: fuzzy\ntext\n")
+    with pytest.raises(ValueError) as info:
+        case.expected_stderr()
+    assert "fuzzy" in str(info.value)
 
 
 def test_result_problems_detects_wrong_stdout_exit_and_stderr(tmp_path: Path) -> None:
     """The runner must notice each of: wrong stdout, wrong exit, wrong/missing stderr."""
-    # A program that prints "ok", exits 2, and writes one stderr line.
     case = _write_case(
         tmp_path,
         awk='BEGIN { print "ok" > "/dev/stderr"; print "ok"; exit 2 }',
         out="ok\n",
         status="2\n",
-        err="ok\n",
+        err="mode: exact\nok\n",
     )
     good = SimpleNamespace(stdout="ok\n", stderr="ok\n", returncode=2)
     assert case.result_problems(good) == []

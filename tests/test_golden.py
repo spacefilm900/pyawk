@@ -49,16 +49,21 @@ def test_golden(case: harness.Case) -> None:
     if any(p.startswith("exit status") for p in problems):
         parts.append(f"exit: got {proc.returncode}, expected {case.expected_exit()}")
     if "stderr mismatch" in problems:
-        parts.append(
-            "".join(
-                difflib.unified_diff(
-                    (case.expected_stderr() or "").splitlines(keepends=True),
-                    proc.stderr.splitlines(keepends=True),
-                    "expected-stderr",
-                    "pyawk-stderr",
+        expect = case.expected_stderr()
+        if expect is not None and expect.mode == "portable":
+            parts.append("stderr: expected a non-empty diagnostic (mode: portable)")
+        elif expect is not None:
+            parts.append(
+                "".join(
+                    difflib.unified_diff(
+                        expect.body.splitlines(keepends=True),
+                        proc.stderr.splitlines(keepends=True),
+                        f"expected-stderr({expect.mode})",
+                        "pyawk-stderr",
+                    )
                 )
             )
-        )
+        parts.append(f"stderr: {proc.stderr!r}")
     elif proc.stderr:
         parts.append(f"stderr: {proc.stderr}")
     pytest.fail("\n".join(parts))

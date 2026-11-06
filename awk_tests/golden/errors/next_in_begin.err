@@ -1,1 +1,2 @@
-pyawk: syntax error at source line 1: next used in BEGIN action
+mode: portable
+# POSIX requires a diagnostic on stderr; wording is not asserted.

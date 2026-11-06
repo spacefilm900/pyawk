@@ -77,12 +77,17 @@ def main() -> int:
             if any(p.startswith("exit status") for p in problems):
                 print(f"    exit: got {proc.returncode}, expected {case.expected_exit()}")
             if "stderr mismatch" in problems:
-                diff = difflib.unified_diff(
-                    (case.expected_stderr() or "").splitlines(keepends=True),
-                    proc.stderr.splitlines(keepends=True),
-                    "expected-stderr", "pyawk-stderr",
-                )
-                sys.stdout.writelines("    " + line for line in diff)
+                expect = case.expected_stderr()
+                if expect is not None and expect.mode == "portable":
+                    print("    stderr: expected a non-empty diagnostic (mode: portable)")
+                elif expect is not None:
+                    diff = difflib.unified_diff(
+                        expect.body.splitlines(keepends=True),
+                        proc.stderr.splitlines(keepends=True),
+                        f"expected-stderr({expect.mode})", "pyawk-stderr",
+                    )
+                    sys.stdout.writelines("    " + line for line in diff)
+                print(f"    stderr: {proc.stderr!r}")
             elif proc.stderr:
                 print("    stderr:", proc.stderr.strip())
     print()
