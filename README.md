@@ -48,13 +48,15 @@ The regression suite is exercised on POSIX (Linux/macOS). A couple of
 ASCII-locale harness probes are skipped on Windows, where `LC_ALL=C` does
 not yield an ASCII preferred encoding.
 
-GitHub Actions (`.github/workflows/ci.yml`) runs the same recipes as
-`scripts/regress.sh` — no reference awks or secrets required (golden
-`.out` files and the regex differential JSON are committed). `quick` is
-ruff + pytest on Python 3.11–3.13; `thorough` adds `run_golden.py` and
-`regex_fuzz.py --check` (C and UTF-8). The script refuses to report
-success if fewer than 1900 tests passed, so a misconfigured collect
-cannot look green.
+The CI recipes live in `scripts/regress.sh` (no reference awks or secrets;
+golden `.out` files and the regex differential JSON are committed).
+`quick` is ruff + pytest on Python 3.11–3.13; `thorough` adds
+`run_golden.py` and `regex_fuzz.py --check` (C and UTF-8). The script
+refuses to report success if fewer than 1900 tests passed, so a
+misconfigured collect cannot look green. The GitHub Actions workflow
+definition is `ci/github-ci.yml`; copy it to `.github/workflows/ci.yml`
+to enable Actions (pushing under `.github/workflows/` needs a token with
+the `workflow` scope).
 
 ```sh
 scripts/regress.sh quick               # same as CI quick job

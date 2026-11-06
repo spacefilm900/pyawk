@@ -61,13 +61,22 @@ def test_regress_exits_nonzero_when_a_step_fails(tmp_path: Path) -> None:
 
 
 def test_workflow_matches_regress_recipe() -> None:
-    """The GitHub Actions workflow must invoke the same regress.sh modes."""
-    workflow = REPO / ".github" / "workflows" / "ci.yml"
-    assert workflow.is_file(), "missing .github/workflows/ci.yml"
-    text = workflow.read_text(encoding="utf-8")
+    """The Actions workflow definition must invoke the same regress.sh modes.
+
+    The canonical file is ``ci/github-ci.yml`` (always in the repo).  A copy
+    at ``.github/workflows/ci.yml`` enables GitHub Actions; pushing that path
+    needs a token with the ``workflow`` scope, so CI may be enabled in a
+    follow-up.  When both exist, they must be identical.
+    """
+    canonical = REPO / "ci" / "github-ci.yml"
+    assert canonical.is_file(), "missing ci/github-ci.yml"
+    text = canonical.read_text(encoding="utf-8")
     assert "scripts/regress.sh quick" in text
     assert "scripts/regress.sh thorough" in text
     assert "pull_request" in text
     assert "enhancements" in text
     # No secrets required for the normal jobs.
     assert "secrets." not in text
+    enabled = REPO / ".github" / "workflows" / "ci.yml"
+    if enabled.is_file():
+        assert enabled.read_text(encoding="utf-8") == text
