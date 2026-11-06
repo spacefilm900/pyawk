@@ -101,6 +101,9 @@ add("control", "for_loop", 'BEGIN {\n\tfor (i = 1; i <= 3; i++) {\n\t\tline = ""
 add("control", "break_continue", 'BEGIN {\n\tfor (i = 1; i <= 10; i++) {\n\t\tif (i % 2) continue\n\t\tif (i > 8) break\n\t\tprintf "%d ", i\n\t}\n\tprint ""\n\ti = 0\n\twhile (1) { if (++i >= 5) break }\n\tprint i\n}\n')
 add("control", "next_statement", '/^#/ { next }\nNF == 0 { next }\n{ print NR ": " $0 }\n', "# comment\nline one\n\n# another\nline two\n")
 add("control", "exit_runs_end", 'NR == 3 { exit }\n{ print }\nEND { print "end at", NR }\n', EMP)
+add("control", "exit_status",
+     '# exit N leaves that status; stdout still counts.\n'
+     'BEGIN { print "bye"; exit 7 }\n', "")
 add("control", "assignment_ops", 'BEGIN {\n\tx = 10; x += 5; print x\n\tx -= 3; print x\n\tx *= 2; print x\n\tx /= 4; print x\n\tx %= 4; print x\n\tx ^= 3; print x\n\ty = z = 7; print y, z\n\ti = 5; print i++, i, ++i, i--, --i, i\n\tprint (1 ? "yes" : "no"), (0 ? "a" : 1 ? "b" : "c")\n}\n')
 add("control", "getline_plain", 'NR == 1 { getline; print "after getline:", $0, NR }\n{ print NR ": " $0 }\nEND { while ((getline line) > 0) n++; print n + 0 }\n', "one\ntwo\nthree\nfour\n")
 add("control", "getline_var", '{ if ((getline second) > 0) print $0 " + " second; else print $0 " alone" }\n', "a\nb\nc\n")
