@@ -150,6 +150,38 @@ def test_nextfile_on_stdin_discards_the_rest_of_it(three_files: list[str]) -> No
     assert awk(prog, "s1\ns2\ns3\n", "-", a, "-")[0] == "stdin s1\nfile a1\n2\n0\n"
 
 
+# ---------------------------------------------------------------- FILENAME on implicit stdin
+# POSIX.1-2024 awk, "ARGV": when no file operand is left to process and none
+# has been processed, "awk shall set FILENAME to '-' and process standard
+# input as if it was given as a file operand".  The FILENAME entry says the
+# same: "or '-' if the file is standard input".  mawk and gawk do this;
+# older pyawk left FILENAME empty.  (Challenge cases AWK-391, 392, 399.)
+
+def test_filename_is_dash_for_stdin_without_operands() -> None:
+    assert awk('{ print "[" FILENAME "]:" $0 }', "alpha\nbeta\n")[0] == "[-]:alpha\n[-]:beta\n"
+
+
+def test_filename_is_dash_for_stdin_with_only_assignment_operands() -> None:
+    assert awk('{ print "[" FILENAME "]:" v ":" $0 }', "x\n", "v=7")[0] == "[-]:7:x\n"
+
+
+def test_filename_is_dash_when_argv_turned_into_an_assignment(three_files: list[str]) -> None:
+    prog = 'BEGIN { ARGV[1] = "v=7" } { print "[" FILENAME "]:" v ":" $0 }'
+    assert awk(prog, "hello\n", three_files[0])[0] == "[-]:7:hello\n"
+
+
+def test_filename_dash_is_kept_in_end_and_set_by_getline_in_begin() -> None:
+    # END sees the last file processed, here standard input, even if empty.
+    assert awk('END { print "[" FILENAME "]", NR }', "")[0] == "[-] 0\n"
+    # A plain getline in BEGIN opens the main input, so FILENAME is set then.
+    assert awk('BEGIN { getline; print "[" FILENAME "]" $0 }', "x\n")[0] == "[-]x\n"
+
+
+def test_filename_is_still_unset_in_begin() -> None:
+    # "Inside a BEGIN action FILENAME shall be unset."
+    assert awk('BEGIN { print "[" FILENAME "]" }', "x\n")[0] == "[]\n"
+
+
 def test_nextfile_rule_order(three_files: list[str]) -> None:
     # Rules after the nextfile are not run for that record, as with next.
     out = awk('{ print "first", $0 } FNR == 1 { nextfile } { print "never", $0 }', "", *three_files)[0]
