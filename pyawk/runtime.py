@@ -902,8 +902,13 @@ class Interpreter:
             self.vars["FNR"] = 0.0
             return True
         if not self.opened_any:
+            # No file operand was processed (there were none, or only
+            # var=value assignments), so read standard input.  POSIX.1-2024
+            # says awk "shall set FILENAME to '-'" in this case, as if "-"
+            # had been given; mawk and gawk do the same.
             self.opened_any = True
             self.reader = self.io.get_stdin_reader()
+            self.vars["FILENAME"] = "-"
             self.vars["FNR"] = 0.0
             return True
         return False
