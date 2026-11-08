@@ -489,10 +489,10 @@ def test_all_names_for_stdin_share_one_reader() -> None:
     assert awk(prog, "1\n2\n3\n") == ("1 2 3\n", 0)
 
 
-def test_version_is_1_1() -> None:
+def test_version_is_1_2() -> None:
     """``--version`` (and ``-V``) print the version from pyawk/__init__.py;
-    v1.1 is the release tagged on the enhancements branch."""
+    v1.2 is the release tagged on the enhancements branch."""
     for flag in ("--version", "-V"):
         res = subprocess.run([sys.executable, "-m", "pyawk", flag], capture_output=True, text=True,
                              encoding="utf-8", cwd=REPO)
-        assert (res.returncode, res.stdout, res.stderr) == (0, "pyawk 1.1.0\n", "")
+        assert (res.returncode, res.stdout, res.stderr) == (0, "pyawk 1.2.0\n", "")

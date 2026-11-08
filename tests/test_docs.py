@@ -62,7 +62,7 @@ def test_package_metadata() -> None:
     assert licence.startswith("MIT License\n")
     assert "Copyright (c) 2026 Keith Haviland" in licence
     project = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    assert project["version"] == pyawk.__version__ == "1.1.0"
+    assert project["version"] == pyawk.__version__ == "1.2.0"
     assert project["authors"] == [{"name": "Keith Haviland"}]
     assert project["license"] == {"text": "MIT"}
     assert "subset" not in project["description"] and "v0.1" not in project["description"]
