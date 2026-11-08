@@ -15,4 +15,4 @@ A file named ``__init__.py`` marks a directory as a Python *package*; its
 contents run when the package is first imported.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
