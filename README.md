@@ -242,3 +242,14 @@ of places where mawk (the reference used for `.out`) differs from POSIX.
 ## License
 
 MIT, copyright (c) 2026 Keith Haviland; see [LICENSE](LICENSE).
+
+The interpreter code is MIT. The imported test suites under
+`awk_tests/` have their own licences:
+
+- `awk_tests/gawk/` — GNU Awk (gawk) 5.4.1 tests, GPL v3 or later;
+  see [awk_tests/gawk/NOTICE.md](awk_tests/gawk/NOTICE.md) and
+  [awk_tests/gawk/LICENSE-GPL-3.0.txt](awk_tests/gawk/LICENSE-GPL-3.0.txt).
+- `awk_tests/onetrue/` — onetrue awk tests, Lucent Technologies 1997
+  notice; see [awk_tests/onetrue/NOTICE.md](awk_tests/onetrue/NOTICE.md).
+
+Those files are test data only and are not part of the interpreter.
