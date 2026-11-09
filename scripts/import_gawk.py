@@ -67,8 +67,9 @@ Output files (layout as in awk_tests/harness.py):
     NAME.out        expected stdout
     MANIFEST.tsv    name, status, reason, refs (as for the onetrue suite)
 
-Re-running the script regenerates everything except KNOWN_FAILURES, so the
-files in awk_tests/gawk/ should never be edited by hand.
+Re-running the script regenerates everything except KNOWN_FAILURES and the
+licence notices (NOTICE.md, LICENSE-GPL-3.0.txt), so the files in
+awk_tests/gawk/ should never be edited by hand aside from those.
 """
 
 from __future__ import annotations
@@ -430,13 +431,19 @@ def main() -> int:
     def in_list(name: str, *list_names: str) -> bool:
         return any(name in lists.get(n, []) for n in list_names)
 
-    known = DEST / "KNOWN_FAILURES"
-    known_text = known.read_text(encoding="utf-8") if known.exists() else None
+    # Keep our own files across the rebuild. Imported cases are regenerated;
+    # KNOWN_FAILURES and the licence notices are not upstream test data.
+    keep_names = ('KNOWN_FAILURES', 'NOTICE.md', 'LICENSE-GPL-3.0.txt')
+    kept = {}
+    for name in keep_names:
+        path = DEST / name
+        if path.exists():
+            kept[name] = path.read_bytes()
     if DEST.exists():
         shutil.rmtree(DEST)
     DEST.mkdir(parents=True)
-    if known_text is not None:
-        known.write_text(known_text, encoding="utf-8")
+    for name, data in kept.items():
+        (DEST / name).write_bytes(data)
 
     rows = []
     for name in sorted(names):

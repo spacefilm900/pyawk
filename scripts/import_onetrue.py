@@ -37,8 +37,9 @@ with four tab-separated columns:
     refs     how the three reference awks (onetrue, mawk, gawk --posix)
              compared on this program
 
-Re-running the script regenerates everything from scratch, so the files
-in awk_tests/onetrue/ should never be edited by hand.
+Re-running the script regenerates everything except KNOWN_FAILURES and
+NOTICE.md, so the files in awk_tests/onetrue/ should never be edited by
+hand aside from those.
 """
 
 from __future__ import annotations
@@ -209,16 +210,19 @@ def main() -> int:
         print(f"import_onetrue: {exc}", file=sys.stderr)
         return 2
 
-    # Start from an empty directory so removed upstream tests disappear too.
-    # KNOWN_FAILURES is ours, not imported (run_golden.py maintains it), so
-    # keep its text across the rebuild.
-    known = DEST / "KNOWN_FAILURES"
-    known_text = known.read_text(encoding="utf-8") if known.exists() else None
+    # Keep our own files across the rebuild. Imported cases are regenerated;
+    # KNOWN_FAILURES and the licence notices are not upstream test data.
+    keep_names = ('KNOWN_FAILURES', 'NOTICE.md')
+    kept = {}
+    for name in keep_names:
+        path = DEST / name
+        if path.exists():
+            kept[name] = path.read_bytes()
     if DEST.exists():
         shutil.rmtree(DEST)
     DEST.mkdir(parents=True)
-    if known_text is not None:
-        known.write_text(known_text, encoding="utf-8")
+    for name, data in kept.items():
+        (DEST / name).write_bytes(data)
 
     names = sorted(p.name for p in opts.src.glob("[tp].*") if p.name not in NOT_TESTS)
     rows = []
