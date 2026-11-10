@@ -6,7 +6,7 @@ name: CI
 
 "on":
   push:
-    branches: [enhancements]
+    branches: [enhancements, master]
   pull_request:
     branches: [enhancements, master]
   # Same thorough command as locally; no secrets required.
