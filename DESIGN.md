@@ -1177,6 +1177,41 @@ against 0.45 s in C mode (2.1 s before the set rewrite); the rest of the
 gap is Python's `re` scanning a large set. `scripts/bench.py --locale
 C.UTF-8` times UTF-8 mode.
 
+## Decisions approved by the owner
+
+These choices were approved in discussion and were not yet written down in
+this file (neighbouring sections already record the rest). Dates are the
+day the behaviour landed, or the day it was written into the notes.
+
+* **`%#g` rounding up to a power of ten** (2026-11-02).
+  `printf "%#g", 999999.5` prints `1.00000e+06`, as POSIX and the C
+  standard ask. glibc (and so gawk, mawk and onetrue-awk, which call it)
+  prints `1.e+06`. pyawk follows POSIX here.
+
+* **`%c` of 128 to 255 in the C locale** (2026-11-01, with the UTF-8
+  work). In the C locale, `printf "%c"` of those codes writes that
+  single raw byte (the value modulo 256), as gawk and mawk do. In UTF-8
+  mode a number is a code point, encoded as UTF-8; values above U+10FFFF
+  follow gawk (already recorded under "Locales and UTF-8").
+
+* **`FILENAME` when reading standard input** (2026-11-07).
+  If no file operand is processed (there are none, or only `var=value`
+  assignments), pyawk reads standard input and sets `FILENAME` to `"-"`,
+  as POSIX.1-2024 requires: "awk shall set FILENAME to '-' and process
+  standard input as if it was given as a file operand". mawk and gawk do
+  the same. `FILENAME` stays unset in `BEGIN` until input is opened.
+
+* **Empty and missing fields, and Austin Group interpretation #1198**
+  (noted 2026-11, during the POSIX challenge work).
+  The Austin Group is the body that maintains the POSIX standard.
+  Interpretation #1198 (2019) records that POSIX is unclear whether an
+  empty or missing field has a string value. pyawk's behaviour is already
+  in "Values" above: a field past `NF`, and an existing empty field, is
+  the empty string, not the uninitialized value, so `$5 == 0` is a
+  *string* comparison and false (onetrue-awk, gawk and mawk all agree).
+  Those cases are *observational*: a difference is not treated as a
+  POSIX failure.
+
 ## Known issues / limitations
 
 * Regex: the automaton's DFA cache is limited to 10 000 states per pattern; a
