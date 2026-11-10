@@ -1,16 +1,21 @@
-# Handover
+# Maintainer guide (HANDOVER)
 
 ## Purpose
 
-This file exists so that another agent or developer can take over
-maintenance of pyawk without relying on the original assistant (Grok Bot)
-or its chat history. It is the entry point: it says what to read, how to
-build and verify the tree, and the rules that must be followed.
+This guide lets any new maintainer, human or AI agent, take over pyawk
+from the repository alone. It is the entry point: it says what to read,
+how to build and verify the tree, how releases and branches work, and
+the rules every change must follow. Nothing outside this repository is
+needed to carry on the work.
 
 Start here, then read [README.md](README.md) for usage and the test map,
-and [DESIGN.md](DESIGN.md) for architecture and semantic decisions. Do not
-treat this chat, or any assistant's memory, as a source of truth once you
-have this file.
+and [DESIGN.md](DESIGN.md) for architecture and every semantic decision.
+If this guide and DESIGN.md disagree with anyone's recollection, the
+files in the repository win.
+
+pyawk was developed by Keith Haviland (the owner) working with AI
+assistants: the code was written by Grok Bot and reviewed by CodeRabbit,
+with the decisions recorded in DESIGN.md.
 
 ## Project overview and scope
 
@@ -56,9 +61,9 @@ The current version on the `enhancements` branch is 1.2.0.
 
 ## Setup and build
 
-Python 3.11 or later is required. On this tree a virtual environment
-already exists at `.venv/`. Prefer `.venv/bin/python` (plain `python` may
-not be on `PATH`).
+Python 3.11 or later is required. Create a virtual environment at
+`.venv/` (the scripts use `.venv/bin/python` when it exists; plain
+`python` may not be on `PATH`).
 
 ```sh
 python3 -m venv .venv
@@ -115,19 +120,24 @@ tests. If a count drops, that is a regression.
 
 ## Release and git workflow
 
-* **`master` is frozen at v1.0** (commit `00b53a3`, tag `v1.0`). Do not
-  merge into it, push to it, or change it unless the owner has explicitly
-  asked you to.
-* **Do all work on `enhancements`.** That is the current development
-  branch (v1.2.0 and later fixes).
-* **The open pull request into `master` is a review vehicle only.** A
-  pull request (PR) is a proposed change put up for review. PR #1 exists
-  so that CodeRabbit can comment on the work. It must never be merged.
+* **`master` is the published branch.** On 10 November 2026 it was
+  fast-forwarded to `enhancements` (no history rewritten), so it holds
+  v1.2.0 and the later fixes. Releases are marked by the tags `v1.0`,
+  `v1.1` and `v1.2`. Move `master` only with the owner's approval, and
+  only as a fast-forward from `enhancements`.
+* **Do all work on `enhancements`**, or on a branch made from it. That
+  is the development branch.
+* **Review history.** Pull requests (PRs, proposed changes put up for
+  review) #1 and #2 were review vehicles so that CodeRabbit could comment
+  on the work. They are closed, unmerged, and kept for the record. The
+  scaffolding branches they used are kept as the tags
+  `archive/full-review-code` and `archive/review-base-code`; never merge
+  those tags.
 * **Tags and GitHub releases only with the owner's approval.** A tag is
   a named label for one commit, used to mark a release. Do not create
   one yourself.
 * **CI** (GitHub Actions, `.github/workflows/ci.yml`) runs on push to
-  `enhancements`, on pull requests into `enhancements` or `master`, and
+  `enhancements` or `master`, on pull requests into `enhancements` or `master`, and
   weekly. The `quick` job is ruff + pytest on Python 3.11, 3.12 and
   3.13; the `thorough` job then runs `scripts/regress.sh thorough`.
   No secrets and no reference awks are required.
@@ -167,8 +177,7 @@ folders (they already kept `KNOWN_FAILURES`).
 
 ## Related resources
 
-These live beside this repository on the development machine, and as
-sibling GitHub repositories under `spacefilm900`. They are not part of
+These are sibling GitHub repositories under `spacefilm900`. They are not part of
 the pyawk tree.
 
 * **[spacefilm900/awk-posix-challenge](https://github.com/spacefilm900/awk-posix-challenge)**
@@ -185,26 +194,24 @@ the pyawk tree.
 * **The sister interpreter:** [hawk](https://github.com/spacefilm900/hawk)
   is the Rust port. It follows the same decisions. A checkout next to
   this one (`../hawk`) is useful but not required for pyawk's own tests.
-* **Reference awks** used for votes, imports and benchmarks, on the
-  development machine under `/workspace/refs` (and `mawk` from the
-  system). pyawk does not hard-code these paths. Set the variables
-  below, or put the programs on `PATH` under the usual names:
+* **Reference awks** used for votes, imports and benchmarks. pyawk does
+  not hard-code their locations. Put the programs on `PATH` under their
+  usual names, or set the variables below:
 
-  | reference | environment variable | path on this machine | testdir variable |
-  |---|---|---|---|
-  | mawk | `PYAWK_REF_MAWK` | `/usr/bin/mawk` | — |
-  | onetrue awk | `PYAWK_REF_ONETRUE` | `/workspace/refs/onetrue-awk/a.out` | `PYAWK_REF_ONETRUE_TESTDIR` (`.../testdir`) |
-  | gawk (always run as `gawk --posix`) | `PYAWK_REF_GAWK` | `/workspace/refs/local/bin/gawk` (GNU Awk 5.4.1) | `PYAWK_REF_GAWK_TESTDIR` (`/workspace/refs/src/gawk-5.4.1/test`) |
+  | reference | environment variable | testdir variable |
+  |---|---|---|
+  | mawk | `PYAWK_REF_MAWK` | — |
+  | onetrue awk (the "one true awk", built from its source as `a.out`) | `PYAWK_REF_ONETRUE` | `PYAWK_REF_ONETRUE_TESTDIR` (its `testdir`) |
+  | gawk 5.4.1 (always run as `gawk --posix`) | `PYAWK_REF_GAWK` | `PYAWK_REF_GAWK_TESTDIR` (the gawk source tree's `test` folder) |
 
   Plain `awk` is never used. A variable that names nothing runnable is
   an error, not a fallback. See the README, "Pointing the tools at the
-  reference awks". BusyBox (`/workspace/refs/busybox/busybox`) is
-  available for comparison only; it is not a tie-break voter.
+  reference awks". BusyBox awk is useful for comparison only; it is not
+  a tie-break voter.
 
 ## Known open items
 
 * Nothing required is outstanding in the POSIX feature set.
-* The review pull request (PR #1) into `master` must stay unmerged.
 * `DESIGN.md`'s "Known issues / limitations" lists remaining behaviour
   that is left as it is on purpose (for example `%x` of integers wider
   than 64 bits, and `rand()` sequences that differ from other awks).
