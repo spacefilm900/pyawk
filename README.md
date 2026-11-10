@@ -3,6 +3,9 @@
 A POSIX-compatible AWK interpreter in pure Python (3.11+), built test-first
 against a golden corpus generated with the system awk.
 
+A new maintainer should start with [HANDOVER.md](HANDOVER.md): it explains
+the purpose of the project, how to verify it, and the rules for changing it.
+
 ## Usage
 
 ```sh
@@ -59,6 +62,7 @@ to enable Actions (pushing under `.github/workflows/` needs a token with
 the `workflow` scope).
 
 ```sh
+make check                             # every suite, then a one-line-per-suite summary (see HANDOVER.md)
 scripts/regress.sh quick               # same as CI quick job
 scripts/regress.sh thorough            # same as CI thorough job
 .venv/bin/python -m pytest -q          # unit tests + every golden case
