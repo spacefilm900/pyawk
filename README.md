@@ -1,5 +1,8 @@
 # pyawk
 
+> [!WARNING]
+> pyawk is the result of an experiment in agentic software engineering. It is not intended to replace established, supported awk interpreters, and it is provided strictly "as is" under the MIT licence.
+
 A POSIX-compatible AWK interpreter in pure Python (3.11+), built test-first
 against a golden corpus whose expected output comes from the reference awks
 (mawk, onetrue-awk and `gawk --posix`).
